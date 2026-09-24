@@ -1,19 +1,23 @@
 name: 自动切片并上传坚果云
 
 on:
-  # 1. 配置定时触发：每天北京时间 00:05 (对应 UTC 16:05)
+  # 1. 定时触发：每天北京时间 00:05 (对应 UTC 16:05) 准时为你切好当天的 6000 字
   schedule:
     - cron: '5 16 * * *'
   
-  # 2. 配置手动触发：允许你在 GitHub 网页上点按钮随时运行
+  # 2. 手动触发：允许你在 GitHub 网页上点按钮随时运行测试
   workflow_dispatch:
+
+# 【核心必改】开启读写权限，允许 GitHub Actions 自动更新 progress.json 账本并 push 回仓库
+permissions:
+  contents: write
 
 jobs:
   run-slice-script:
     runs-on: ubuntu-latest
 
     steps:
-    # 步骤 1：下载仓库里的代码和小说文件
+    # 步骤 1：下载仓库里的代码、账本和 TXT 小说文件
     - name: 检出仓库代码
       uses: actions/checkout@v4
 
@@ -23,13 +27,14 @@ jobs:
       with:
         python-version: '3.10'
 
-    # 步骤 3：读取 requirements.txt 安装所有第三方库
+    # 步骤 3：读取你的 requirements.txt，并补上 EbookLib 以防 Gemini 的代码需要它
     - name: 安装脚本依赖
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install EbookLib
 
-    # 步骤 4：运行切片脚本，并将 GitHub Secrets 安全地注入给脚本使用
+    # 步骤 4：运行切片脚本，安全注入坚果云的账号和应用密码
     - name: 运行切片并上传
       env:
         JIANGUOYUN_USER: ${{ secrets.JIANGUOYUN_USER }}
