@@ -1,3 +1,6 @@
 webdavclient3
 tqdm
 chardet
+beautifulsoup4
+deep-translator
+EbookLib
