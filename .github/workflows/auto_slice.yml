@@ -8,7 +8,7 @@ on:
   # 2. 手动触发：允许你在 GitHub 网页上点按钮随时运行测试
   workflow_dispatch:
 
-# 【核心必改】开启读写权限，允许 GitHub Actions 自动更新 progress.json 账本并 push 回仓库
+# 【核心必改】开启读写权限，允许 GitHub Actions 自动更新账本并 push 回仓库
 permissions:
   contents: write
 
@@ -41,3 +41,21 @@ jobs:
         JIANGUOYUN_PASS: ${{ secrets.JIANGUOYUN_PASS }}
       run: |
         python slice_and_upload.py
+
+    # 步骤 5：【新增核心加固】把新代码产生的账本和历史进度文件强制提交并推回 GitHub 仓库
+    - name: 强制同步账本进度回仓库
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@://github.com"
+        
+        # 自动把代码里可能产生的所有账本、历史记录文件全部暂存起来
+        git add progress.json sync_history.txt sync_history_lit_final.txt 2>/dev/null || true
+        
+        # 检查是否有文件改动，如果有就自动 commit 提交并 push 推出，完成闭环
+        if ! git diff --cached --quiet; then
+          git commit -m "🔄 自动更新切片进度账本 [skip ci]"
+          git push
+          echo "✅ 账本进度已成功同步回 GitHub 仓库！"
+        else
+          echo "ℹ️ 今日进度无变动，跳过 Git 提交。"
+        fi
