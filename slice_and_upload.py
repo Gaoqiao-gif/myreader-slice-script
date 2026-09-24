@@ -60,10 +60,10 @@ def build_and_upload_daily_epub(date_str):
     print(f" 开始编纂今日电子书 EPUB，共计 {len(GLOBAL_EPUB_ARTICLES)} 个章节...")
     
     book = epub.EpubBook()
-    epub_filename = f"每日文学精选_{date_str}.epub"
+    epub_filename = f"高桥文学_{date_str}.epub"
     
     book.set_identifier(f'id_{date_str}')
-    book.set_title(f'每日文学精选 ({date_str})')
+    book.set_title(f'高桥文学 ({date_str})')
     book.set_language('zh')
     book.add_author('Python Automation Bot')
 
@@ -292,7 +292,7 @@ class SmartBookSplitter:
         html_output = str(optimized_lit_soup)
 
         if upload_to_memory_queue(html_output, display_name):
-            print(f"✅ 文学书切片成功: {display_name} (字数: {len(slice_text)})")
+            print(f"✅ 高桥文学: {display_name} (字数: {len(slice_text)})")
             self.progress_map[target] = end if end < total else -1
             self._save_progress()
 
