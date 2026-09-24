@@ -22,8 +22,9 @@ def get_beijing_time():
 
 # ==================== 【坚果云 WebDAV 模块】 ====================
 def get_nutstore_auth():
-    account = os.environ.get('NUTSTORE_USER') or os.environ.get('DAV_ACCOUNT')
-    token = os.environ.get('NUTSTORE_PASSWORD') or os.environ.get('DAV_TOKEN')
+    # 精准对齐你的 GitHub Secrets 名字
+    account = os.environ.get('JIANGUOYUN_USER')
+    token = os.environ.get('JIANGUOYUN_PASS')
     return account, token
 
 def upload_to_memory_queue(file_content, target_filename):
