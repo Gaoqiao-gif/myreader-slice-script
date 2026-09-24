@@ -42,20 +42,27 @@ jobs:
       run: |
         python slice_and_upload.py
 
-    # 步骤 5：【新增核心加固】把新代码产生的账本和历史进度文件强制提交并推回 GitHub 仓库
+    # 步骤 5：【核心精修对账】把新代码产生的账本和历史进度文件强制提交并推回 GitHub 仓库
     - name: 强制同步账本进度回仓库
       run: |
         git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@://github.com"
-        
-        # 自动把代码里可能产生的所有账本、历史记录文件全部暂存起来
-        git add progress.json sync_history.txt sync_history_lit_final.txt 2>/dev/null || true
-        
-        # 检查是否有文件改动，如果有就自动 commit 提交并 push 推出，完成闭环
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        # 让 git 自动去抓所有被修改过（含变动进度）的 .json 和 .txt 账本
+        git add *.json *.txt 2>/dev/null || true
+
+        # 检查当前暂存区状态，在日志里打印出来，方便我们肉眼对账
+        git status
+
+        # 正常的闭环提交
         if ! git diff --cached --quiet; then
-          git commit -m "🔄 自动更新切片进度账本 [skip ci]"
+          git commit -m "🤖 自动更新新项目账本进度 [skip ci]"
           git push
           echo "✅ 账本进度已成功同步回 GitHub 仓库！"
         else
-          echo "ℹ️ 今日进度无变动，跳过 Git 提交。"
+          echo "  今日进度无变动，跳过提交。"
         fi
+
+
+
+
