@@ -7,8 +7,8 @@ from webdav3.client import Client
 from ebooklib import epub
 
 # ==================== 配置与常量 ====================
-JIANGUOYUN_SERVER = 'https://jianguoyun.com'
-ROOT_DIR = '/MyReader'  # 改为你真实的 MyReader 目录
+JIANGUOYUN_SERVER = 'https://dav.jianguoyun.com/dav'
+ROOT_DIR = '/MyReaderBooks'
 PROGRESS_FILE = 'progress.json'
 EXCLUDE_FILES = {'README.md', 'requirements.txt', 'slice_and_upload.py', 'progress.json', '.gitignore'}
 
@@ -106,6 +106,7 @@ def create_epub(book_title, chapter_num, paragraphs):
     book.set_title(f"{book_title} - 第{chapter_num:03d}部分")
     book.set_language('zh')
     
+    # 获取北京时间作为元数据出版日期
     bj_tz = timezone(timedelta(hours=8))
     current_date_str = datetime.now(bj_tz).strftime('%Y-%m-%d')
     book.add_metadata('DC', 'date', current_date_str)
@@ -113,7 +114,7 @@ def create_epub(book_title, chapter_num, paragraphs):
     html_content = [f'<html><head><title>{book_title} 第{chapter_num:03d}部分</title></head><body>']
     html_content.append(f'<h2>第{chapter_num:03d}部分</h2>')
     for p in paragraphs:
-        html_content.append(f'<p style="text-indent: 2em; margin-bottom: 0.8em; line-height: 1.6;">{p}</p>')
+        html_content.append(f'<p style="text-indent: 2em;">{p}</p>')
     html_content.append('</body></html>')
     
     chapter = epub.EpubHtml(
@@ -138,7 +139,7 @@ def create_epub(book_title, chapter_num, paragraphs):
     return epub_filename
 
 
-# ==================== 4. WebDAV 上传（绝对不覆盖）【已修正关键键名】 ====================
+# ==================== 4. WebDAV 上传（绝对不覆盖） ====================
 def upload_to_jianguoyun(local_file, remote_filename):
     user = os.environ.get('JIANGUOYUN_USER')
     password = os.environ.get('JIANGUOYUN_PASS')
@@ -146,7 +147,7 @@ def upload_to_jianguoyun(local_file, remote_filename):
     if not user or not password:
         raise ValueError("环境变量 JIANGUOYUN_USER 或 JIANGUOYUN_PASS 未设置！")
         
-    # 彻底修正底层库硬性要求的 webdav_hostname 和 webdav_login 键名
+    # 【已修正】使用 webdav3 正确的配置项 webdav_hostname
     options = {
         'webdav_hostname': JIANGUOYUN_SERVER,
         'webdav_login': user,
@@ -154,6 +155,7 @@ def upload_to_jianguoyun(local_file, remote_filename):
     }
     
     client = Client(options)
+    client.verify = True
     
     if not client.check(ROOT_DIR):
         client.mkdir(ROOT_DIR)
@@ -161,14 +163,14 @@ def upload_to_jianguoyun(local_file, remote_filename):
     remote_path = f"{ROOT_DIR}/{remote_filename}"
     
     client.upload_sync(remote_path=remote_path, local_path=local_file)
-    print(f"成功上传独立章节文件到高桥文学云端: {remote_path}")
+    print(f"成功上传独立章节文件到云端: {remote_path}")
 
 
 # ==================== 5. Git 自动记账与推送 ====================
 def git_commit_and_push():
     try:
         subprocess.run(['git', 'config', '--global', 'user.name', 'github-actions[bot]'], check=True)
-        subprocess.run(['git', 'config', '--global', 'user.email', 'github-actions[bot]@://github.com'], check=True)
+        subprocess.run(['git', 'config', '--global', 'user.email', 'github-actions[bot]@users.noreply.github.com'], check=True)
         subprocess.run(['git', 'add', PROGRESS_FILE], check=True)
         
         status_result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True, check=True)
@@ -214,8 +216,6 @@ def main():
             char_pointer = 0
             chapter_num = 1
             print(f"上一本书已全书完结！自动切换到下一本: {current_book}")
-            with open(current_book, 'r', encoding='utf-8', errors='ignore') as f_next:
-                content = f_next.read()
             end_pointer = find_smart_end_point(content, char_pointer)
         else:
             print("所有小说均已完结，暂无新书可读！")
