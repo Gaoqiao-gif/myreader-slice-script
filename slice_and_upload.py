@@ -222,14 +222,17 @@ class SmartBookSplitter:
         self.history_file = history_file
         self.split_size = split_size
         self.progress_map = self._load_progress()
+        # 定义用于智能切分的中文标点符号和换行符
+        self.punctuations = {'。', '！', '？', '；', '”', '’', '…', '\n'}
 
     def _load_progress(self):
         progress = {}
         if os.path.exists(self.history_file):
             with open(self.history_file, "r", encoding="utf-8") as f:
                 for line in f:
-                    if " : " in line:
-                        parts = line.strip().split(" : ", 1)
+                    if ":" in line:
+                        # 兼容带空格或不带空格的冒号格式
+                        parts = line.strip().split(":", 1)
                         try:
                             progress[parts[0].strip()] = int(parts[1].strip())
                         except: pass
@@ -295,7 +298,25 @@ class SmartBookSplitter:
             print(f"书本《{target}》已全部切分完毕！")
             return
 
+        # 智能寻找标点符号作为切分终点
         end = min(start + self.split_size, total)
+        
+        if end < total:
+            found_punc = False
+            # 1. 优先向后找 300 字以内的标点符号
+            for i in range(end, min(end + 300, total)):
+                if full_text[i] in self.punctuations:
+                    end = i + 1  # 切在标点符号后面
+                    found_punc = True
+                    break
+            
+            # 2. 如果向后没找到，尝试向前找 300 字以内的标点符号
+            if not found_punc:
+                for i in range(end, max(start, end - 300), -1):
+                    if full_text[i] in self.punctuations:
+                        end = i + 1
+                        break
+
         slice_text = full_text[start:end]
         
         body_html = "".join([split_long_paragraph(p, 100) for p in slice_text.split('\n') if p.strip()])
@@ -315,7 +336,7 @@ class SmartBookSplitter:
             print(f"✅ 高桥文学: {display_name} (字数: {len(slice_text)})")
             self.progress_map[target] = end if end < total else -1
             self._save_progress()
-
+            
 # ==================== 【主控调度】 ====================
 def main():
     bj = get_beijing_time()
