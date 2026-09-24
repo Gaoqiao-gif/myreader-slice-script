@@ -5,6 +5,7 @@ import datetime
 import zipfile
 import requests
 import urllib3
+import chardet
 from bs4 import BeautifulSoup
 
 # ==================== 【1. 环境配置】 ====================
@@ -242,10 +243,26 @@ class SmartBookSplitter:
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
         if ext == '.txt':
-            for enc in ['utf-8', 'gbk', 'utf-16']:
-                try:
-                    with open(file_path, 'r', encoding=enc, errors='ignore') as f: return f.read()
-                except: continue
+            try:
+                # 自动以二进制模式读取前 20000 字节检测编码格式
+                with open(file_path, 'rb') as f:
+                    raw_data = f.read(20000)
+                detected = chardet.detect(raw_data)
+                encoding = detected.get('encoding') or 'utf-8'
+                
+                # 若检测出来是置信度低的奇怪编码，做个常规兜底
+                if not encoding or detected.get('confidence', 0) < 0.6:
+                    encoding = 'gbk'
+
+                with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
+                    return f.read()
+            except Exception:
+                # 最后的容错重试
+                for enc in ['utf-8', 'gbk', 'gb18030', 'utf-16']:
+                    try:
+                        with open(file_path, 'r', encoding=enc, errors='ignore') as f:
+                            return f.read()
+                    except: continue
         elif ext == '.epub':
             try:
                 text_content = []
@@ -282,10 +299,13 @@ class SmartBookSplitter:
         slice_text = full_text[start:end]
         
         body_html = "".join([split_long_paragraph(p, 100) for p in slice_text.split('\n') if p.strip()])
-        pure_name = re.sub(r'[^\w\u4e00-\u9fa5]', '', target.split('.')[0])
+        
+        # 使用 os.path.splitext 切掉后缀，防止带有扩展名
+        book_title = os.path.splitext(target)[0]
+        pure_name = re.sub(r'[^\w\u4e00-\u9fa5]', '', book_title)
         display_name = f"{date_str}_文学_{pure_name}_第{start+1}字"
         
-        raw_output = f"<h1>《{target}》</h1>{body_html}<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>进度: {start+1}-{end} | 总计: {total}</div>"
+        raw_output = f"<h1>《{book_title}》</h1>{body_html}<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>进度: {start+1}-{end} | 总计: {total}</div>"
         
         lit_soup = BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser')
         optimized_lit_soup = optimize_html_for_mobile_soup(lit_soup)
