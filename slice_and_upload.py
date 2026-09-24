@@ -164,13 +164,17 @@ def upload_to_jianguoyun(local_file, remote_filename):
     
     client = Client(options)
     
-    if not client.check(ROOT_DIR):
-        client.mkdir(ROOT_DIR)
+    # 结合坚果云 WebDAV 的特性，直接拼接全路径检查
+    full_path_dir = f"/dav{ROOT_DIR}"
+    if not client.check(full_path_dir):
+        client.mkdir(full_path_dir)
         
-    remote_path = f"{ROOT_DIR}/{remote_filename}"
+    remote_path = f"{full_path_dir}/{remote_filename}"
     
+    # 执行同步上传
     client.upload_sync(remote_path=remote_path, local_path=local_file)
-    print(f"成功上传独立章节文件到云端: {remote_path}")
+    print(f"成功上传独立章节文件到高桥文学云端: {remote_path}")
+
 
 
 # ==================== 5. Git 自动记账与推送 ====================
