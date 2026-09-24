@@ -75,7 +75,12 @@ def find_smart_end_point(text, start):
 
 
 def smart_segment_paragraphs(raw_chunk):
+    """
+    智能排版核心：保留小说原有的正常换行短段落；
+    只有当原段落超过 150 字时，才在 100-150 字附近的标点符号处强行切分成小自然段。
+    """
     paragraphs = []
+    # 严格按照原书换行符切分
     raw_paragraphs = raw_chunk.split('\n')
     
     for raw_p in raw_paragraphs:
@@ -83,9 +88,11 @@ def smart_segment_paragraphs(raw_chunk):
         if not raw_p:
             continue
             
+        # 如果原本就是不超过 150 字的舒适短段落，直接保留
         if len(raw_p) <= SUB_PARAGRAPH_MAX:
             paragraphs.append(raw_p)
         else:
+            # 如果是超过 150 字的超长一坨文字，启动智能切分
             current_sub = ""
             for char in raw_p:
                 current_sub += char
@@ -106,15 +113,16 @@ def create_epub(book_title, chapter_num, paragraphs):
     book.set_title(f"{book_title} - 第{chapter_num:03d}部分")
     book.set_language('zh')
     
-    # 获取北京时间作为元数据出版日期
+    # 获取北京时间作为元数据出版日期封面展示
     bj_tz = timezone(timedelta(hours=8))
     current_date_str = datetime.now(bj_tz).strftime('%Y-%m-%d')
     book.add_metadata('DC', 'date', current_date_str)
     
     html_content = [f'<html><head><title>{book_title} 第{chapter_num:03d}部分</title></head><body>']
     html_content.append(f'<h2>第{chapter_num:03d}部分</h2>')
+    # 核心排版：每段开头雷打不动完美空出两格
     for p in paragraphs:
-        html_content.append(f'<p style="text-indent: 2em;">{p}</p>')
+        html_content.append(f'<p style="text-indent: 2em; margin-bottom: 0.8em; line-height: 1.6;">{p}</p>')
     html_content.append('</body></html>')
     
     chapter = epub.EpubHtml(
@@ -134,6 +142,7 @@ def create_epub(book_title, chapter_num, paragraphs):
     
     book.spine = ['nav', chapter]
     
+    # 统一增加高桥文学冠名，文件名带部分后缀，绝对不覆盖旧文件
     epub_filename = f"高桥文学_《{book_title}》_第{chapter_num:03d}部分.epub"
     epub.write_epub(epub_filename, book, {})
     return epub_filename
@@ -148,20 +157,18 @@ def upload_to_jianguoyun(local_file, remote_filename):
         raise ValueError("环境变量 JIANGUOYUN_USER 或 JIANGUOYUN_PASS 未设置！")
         
     options = {
-        'webdav_conn_str': JIANGUOYUN_SERVER,
-        'webdav_login': user,
+        'webdav_url': JIANGUOYUN_SERVER,
+        'webdav_username': user,
         'webdav_password': password
     }
     
     client = Client(options)
-    client.verify = True
     
     if not client.check(ROOT_DIR):
         client.mkdir(ROOT_DIR)
         
     remote_path = f"{ROOT_DIR}/{remote_filename}"
     
-    # 独立文件名上传，不覆盖旧文件
     client.upload_sync(remote_path=remote_path, local_path=local_file)
     print(f"成功上传独立章节文件到云端: {remote_path}")
 
@@ -170,7 +177,7 @@ def upload_to_jianguoyun(local_file, remote_filename):
 def git_commit_and_push():
     try:
         subprocess.run(['git', 'config', '--global', 'user.name', 'github-actions[bot]'], check=True)
-        subprocess.run(['git', 'config', '--global', 'user.email', 'github-actions[bot]@users.noreply.github.com'], check=True)
+        subprocess.run(['git', 'config', '--global', 'user.email', 'github-actions[bot]@://github.com'], check=True)
         subprocess.run(['git', 'add', PROGRESS_FILE], check=True)
         
         status_result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True, check=True)
@@ -209,6 +216,7 @@ def main():
         
     end_pointer = find_smart_end_point(content, char_pointer)
     
+    # 修复多书切换时的内容越界卡死漏洞
     if end_pointer == -1 or char_pointer >= len(content):
         book_index = books.index(current_book)
         if book_index + 1 < len(books):
@@ -216,6 +224,8 @@ def main():
             char_pointer = 0
             chapter_num = 1
             print(f"上一本书已全书完结！自动切换到下一本: {current_book}")
+            with open(current_book, 'r', encoding='utf-8', errors='ignore') as f_next:
+                content = f_next.read()
             end_pointer = find_smart_end_point(content, char_pointer)
         else:
             print("所有小说均已完结，暂无新书可读！")
@@ -224,6 +234,7 @@ def main():
     raw_chunk = content[char_pointer:end_pointer]
     paragraphs = smart_segment_paragraphs(raw_chunk)
     
+    # 【修复大漏洞】获取纯书名字符串，切掉后缀，防止元数据崩溃
     book_title = os.path.splitext(current_book)[0]
     epub_filename = create_epub(book_title, chapter_num, paragraphs)
     print(f"成功封装单章 EPUB: {epub_filename} (字数: {len(raw_chunk)})")
@@ -236,7 +247,7 @@ def main():
         if os.path.exists(epub_filename):
             os.remove(epub_filename)
             
-    # 更新账本
+    # 更新账本并回传 GitHub
     progress["current_book"] = current_book
     progress["char_pointer"] = end_pointer
     progress["chapter_num"] = chapter_num + 1
