@@ -8,7 +8,7 @@ from ebooklib import epub
 
 # ==================== 配置与常量 ====================
 JIANGUOYUN_SERVER = 'https://jianguoyun.com'
-ROOT_DIR = '/MyReaderBooks'
+ROOT_DIR = '/MyReader'
 PROGRESS_FILE = 'progress.json'
 EXCLUDE_FILES = {'README.md', 'requirements.txt', 'slice_and_upload.py', 'progress.json', '.gitignore'}
 
