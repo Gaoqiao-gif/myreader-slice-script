@@ -2,7 +2,7 @@ name: Fangtian Reader Auto Sync
 
 on:
   schedule:
-    - cron: '0 23 * * *' # 每天北京时间早上 7 点（UTC 23点）自动运行
+    - cron: '5 16 * * *' # 每天北京时间凌晨 00:05（UTC 前一天 16点05分）自动运行
   workflow_dispatch: # 支持你在网页端手动点按钮运行
 
 jobs:
