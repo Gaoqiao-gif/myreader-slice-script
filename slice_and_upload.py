@@ -42,14 +42,14 @@ def upload_to_memory_queue(file_content, target_filename):
         "content": file_content,
         "filename": target_filename
     })
-    print(f" [内存拦截成功] 已成功归档至待打包队列: {target_filename}")
+    print(f"📥 [内存拦截成功] 已成功归档至待打包队列: {target_filename}")
     return True
 
 # ==================== 【EPUB 电子书编纂核心函数】 ====================
 def build_and_upload_daily_epub(date_str):
     global GLOBAL_EPUB_ARTICLES
     if not GLOBAL_EPUB_ARTICLES:
-        print(" 今日没有切片内容，跳过 EPUB 打包。")
+        print("📭 今日没有切片内容，跳过 EPUB 打包。")
         return False
 
     try:
@@ -58,7 +58,7 @@ def build_and_upload_daily_epub(date_str):
         print("❌ 错误: 未安装 ebooklib 库！请运行 pip install EbookLib")
         return False
 
-    print(f" 开始编纂今日电子书 EPUB，共计 {len(GLOBAL_EPUB_ARTICLES)} 个章节...")
+    print(f"📚 开始编纂今日电子书 EPUB，共计 {len(GLOBAL_EPUB_ARTICLES)} 个章节...")
     
     book = epub.EpubBook()
     epub_filename = f"高桥文学_{date_str}.epub"
@@ -206,7 +206,7 @@ def optimize_html_for_mobile_soup(soup):
             margin-bottom: 0.2em !important;
             text-align: justify !important;
             font-size: 16.5px !important;
-            text-text-indent: 2em !important;
+            text-indent: 2em !important;
         }
     </style>
     """
@@ -216,51 +216,61 @@ def optimize_html_for_mobile_soup(soup):
 
     return soup
 
-# ==================== 【文学书分段核心类】 ====================
+# ==================== 【文学书分段核心类 (已加固原子落盘)】 ====================
 class SmartBookSplitter:
     def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
         self.split_size = split_size
         self.progress_map = self._load_progress()
-        # 定义用于智能切分的中文标点符号和换行符
         self.punctuations = {'。', '！', '？', '；', '”', '’', '…', '\n'}
 
     def _load_progress(self):
         progress = {}
         if os.path.exists(self.history_file):
-            with open(self.history_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    if ":" in line:
-                        # 兼容带空格或不带空格的冒号格式
-                        parts = line.strip().split(":", 1)
-                        try:
-                            progress[parts[0].strip()] = int(parts[1].strip())
-                        except: pass
+            try:
+                with open(self.history_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if ":" in line:
+                            parts = line.strip().split(":", 1)
+                            try:
+                                progress[parts[0].strip()] = int(parts[1].strip())
+                            except: pass
+            except Exception as e:
+                print(f"⚠️ 读取历史账本异常: {e}")
         return progress
 
     def _save_progress(self):
-        content = "".join([f"{k} : {v}\n" for k, v in self.progress_map.items()])
-        with open(self.history_file, "w", encoding="utf-8") as f:
-            f.write(content)
+        """【核心重构】采用临时文件 + 物理落盘 (fsync) + 原子替换，杜绝因程序异常崩溃导致账本丢失或损坏"""
+        temp_file = self.history_file + ".tmp"
+        try:
+            content = "".join([f"{k} : {v}\n" for k, v in self.progress_map.items()])
+            with open(temp_file, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()            # 刷新系统缓冲区
+                os.fsync(f.fileno()) # 强制写入物理磁盘
+            os.replace(temp_file, self.history_file) # 原子重命名替换
+            print(f"💾 [安全落盘成功] 账本进度已安全写入硬盘: {self.history_file}")
+        except Exception as e:
+            print(f"❌ 保存进度账本异常: {e}")
+            if os.path.exists(temp_file):
+                try: os.remove(temp_file)
+                except: pass
 
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
         if ext == '.txt':
             try:
-                # 自动以二进制模式读取前 20000 字节检测编码格式
                 with open(file_path, 'rb') as f:
                     raw_data = f.read(20000)
                 detected = chardet.detect(raw_data)
                 encoding = detected.get('encoding') or 'utf-8'
                 
-                # 若检测出来是置信度低的奇怪编码，做个常规兜底
                 if not encoding or detected.get('confidence', 0) < 0.6:
                     encoding = 'gbk'
 
                 with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
                     return f.read()
             except Exception:
-                # 最后的容错重试
                 for enc in ['utf-8', 'gbk', 'gb18030', 'utf-16']:
                     try:
                         with open(file_path, 'r', encoding=enc, errors='ignore') as f:
@@ -284,10 +294,10 @@ class SmartBookSplitter:
         books = sorted([f for f in os.listdir('.') if f.lower().endswith(('.txt', '.epub')) and "sync_history" not in f.lower() and f not in {"requirements.txt", "README.md"}])
         target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
         if not target:
-            print(" 没有发现待切分的新文学书（请在同目录下放入 .txt 或 .epub 文件）。")
+            print("📭 没有发现待切分的新文学书（请在同目录下放入 .txt 或 .epub 文件）。")
             return
 
-        print(f" 正在切分文学书: 《{target}》")
+        print(f"📖 正在切分文学书: 《{target}》")
         full_text = self._extract_text(target).replace('\r', '')
         total = len(full_text)
         start = self.progress_map.get(target, 0)
@@ -295,7 +305,7 @@ class SmartBookSplitter:
         if start >= total:
             self.progress_map[target] = -1
             self._save_progress()
-            print(f"书本《{target}》已全部切分完毕！")
+            print(f"🎉 书本《{target}》已全部切分完毕！")
             return
 
         # 智能寻找标点符号作为切分终点
@@ -306,7 +316,7 @@ class SmartBookSplitter:
             # 1. 优先向后找 300 字以内的标点符号
             for i in range(end, min(end + 300, total)):
                 if full_text[i] in self.punctuations:
-                    end = i + 1  # 切在标点符号后面
+                    end = i + 1 
                     found_punc = True
                     break
             
@@ -321,7 +331,6 @@ class SmartBookSplitter:
         
         body_html = "".join([split_long_paragraph(p, 100) for p in slice_text.split('\n') if p.strip()])
         
-        # 使用 os.path.splitext 切掉后缀，防止带有扩展名
         book_title = os.path.splitext(target)[0]
         pure_name = re.sub(r'[^\w\u4e00-\u9fa5]', '', book_title)
         display_name = f"{date_str}_文学_{pure_name}_第{start+1}字"
@@ -333,26 +342,27 @@ class SmartBookSplitter:
         html_output = str(optimized_lit_soup)
 
         if upload_to_memory_queue(html_output, display_name):
-            print(f"✅ 高桥文学: {display_name} (字数: {len(slice_text)})")
+            print(f"✅ 高桥文学切片成功: {display_name} (字数: {len(slice_text)})")
             self.progress_map[target] = end if end < total else -1
+            # 关键点：切完立即落盘保存
             self._save_progress()
-            
+
 # ==================== 【主控调度】 ====================
 def main():
     bj = get_beijing_time()
     today = bj.strftime("%Y%m%d")
-    print(f" 任务启动 | 北京时间: {bj.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🚀 任务启动 | 北京时间: {bj.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # 1. 执行长文/文学书切片
+    # 1. 执行长文/文学书切片（内部切完已强制落盘更新账本）
     SmartBookSplitter().run_daily_slice(today)
     
-    # 2. 将切片打包成 EPUB 并上传坚果云
+    # 2. 将切片打包成 EPUB 并上传坚果云（即使此步骤由于网络原因报错，账本也已经安全保存进硬盘了）
     epub_success = build_and_upload_daily_epub(today)
     
     if epub_success:
-        print(" 所有切片与上传任务执行完毕！")
+        print("🏁 所有切片与上传任务执行完毕！")
     else:
-        print("❌ 本次没有生成新的 EPUB 或上传失败。")
+        print("⚠️ 提示: EPUB 上传坚果云可能未执行或失败，但本地切片账本已安全更新。")
 
 if __name__ == "__main__": 
     main()
