@@ -423,7 +423,7 @@ def fetch_full_content_if_needed(link, raw_content):
             
     return raw_content
 
-# ==================== 【文学书分段逻辑】 ====================
+# ==================== 【文学书分段逻辑 (编码加固版)】 ====================
 class SmartBookSplitter:
     def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
@@ -450,23 +450,58 @@ class SmartBookSplitter:
 
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
+        
+        # 1. 处理老旧 .txt 文件（严谨的编码探测：utf-8 -> gb18030(兼容gbk/gb2312) -> utf-16）
         if ext == '.txt':
-            for enc in ['utf-8', 'gbk', 'utf-16']:
+            encodings_to_try = ['utf-8', 'gb18030', 'utf-16']
+            for enc in encodings_to_try:
                 try:
-                    with open(file_path, 'r', encoding=enc, errors='ignore') as f: return f.read()
-                except: continue
+                    # 先用 strict 模式严格测试是否能正确解码
+                    with open(file_path, 'r', encoding=enc, errors='strict') as f:
+                        text = f.read()
+                        print(f"📖 成功以 [{enc}] 编码读取文本文件: {file_path}")
+                        return text
+                except (UnicodeDecodeError, Exception):
+                    continue
+            
+            # 如果所有标准编码都严格失败，最后用 gb18030 配合 replace 兜底（确保不崩）
+            try:
+                with open(file_path, 'r', encoding='gb18030', errors='replace') as f:
+                    print(f"⚠️ 警告: 文本文件编码复杂，已强制以 [gb18030] 兜底读取: {file_path}")
+                    return f.read()
+            except Exception as e:
+                print(f"❌ 终极读取文本失败: {e}")
+                return ""
+
+        # 2. 处理 .epub 文件（防止内部 html 带有老旧编码）
         elif ext == '.epub':
             try:
                 text_content = []
                 with zipfile.ZipFile(file_path, 'r') as z:
                     for name in sorted(z.namelist()):
                         if name.endswith(('.html', '.xhtml', '.htm')):
-                            soup = BeautifulSoup(z.read(name), 'html.parser')
+                            raw_bytes = z.read(name)
+                            # 尝试对 epub 内页字节进行多编码解码
+                            html_text = ""
+                            for enc in ['utf-8', 'gb18030']:
+                                try:
+                                    html_text = raw_bytes.decode(enc)
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            if not html_text:
+                                html_text = raw_bytes.decode('gb18030', errors='replace')
+                                
+                            soup = BeautifulSoup(html_text, 'html.parser')
                             for el in soup.find_all(['p', 'h1', 'h2', 'div']):
                                 t = el.get_text().strip()
                                 if t: text_content.append(t)
+                print(f"📖 成功解析 EPUB 电子书: {file_path}")
                 return "\n\n".join(text_content)
-            except: pass
+            except Exception as e:
+                print(f"❌ 解析 EPUB 失败: {e}")
+                pass
+                
         return ""
 
     def run_daily_slice(self, date_str):
