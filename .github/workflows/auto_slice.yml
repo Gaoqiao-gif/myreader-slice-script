@@ -9,7 +9,7 @@ jobs:
   run-script:
     runs-on: ubuntu-latest
     
-    # ⚠️ 关键权限：赋予 Actions 写入仓库的权限，否则无法推送账本
+    # 💡 赋予 Actions 写入仓库的权限，防止账本同步失败
     permissions:
       contents: write
 
@@ -29,19 +29,20 @@ jobs:
 
     - name: Run Python script
       env:
-        NUTSTORE_USER: ${{ secrets.NUTSTORE_USER }}
-        NUTSTORE_PASSWORD: ${{ secrets.NUTSTORE_PASSWORD }}
+        # 🚀 核心连接：把网页上的 DAV 密钥拿出来，完美交接给 Python 代码
+        DAV_ACCOUNT: ${{ secrets.DAV_ACCOUNT }}
+        DAV_TOKEN: ${{ secrets.DAV_TOKEN }}
       run: |
-        python get_daily_article.py  # 假设你的脚本名字叫这个，请根据实际文件名修改
+        python get_daily_article.py
 
-    # ==================== 👇 关键：把 B 项目的账本自动推回 GitHub 仓库 👇 ====================
+    # ==================== 👇 关键：把账本自动推回 GitHub 仓库 👇 ====================
     - name: Commit and push history files
       run: |
         git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.email "github-actions[bot]@://github.com"
         
-        # 添加两个 B 项目专属账本
-        git add sync_history_b.txt sync_history_lit_final_b.txt || true
+        # 自动抓取并添加同步账本
+        git add sync_history_b.txt sync_history_lit_final_b.txt sync_history_lit_final.txt || true
         
         # 提交更改（如果没变化则跳过，防止报错）
         git commit -m "Auto update reader history records [skip ci]" || echo "No changes to commit"
