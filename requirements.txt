@@ -4,3 +4,4 @@ chardet
 beautifulsoup4
 deep-translator
 EbookLib
+mobi
