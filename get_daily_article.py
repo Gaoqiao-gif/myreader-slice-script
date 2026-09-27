@@ -172,7 +172,7 @@ def optimize_html_for_mobile_soup(soup):
 
     mobile_css = """
     <style>
-        html, body, div, section, article, p, table, tr, td, th {
+        html, body, section, article, p, table, tr, td, th {
             width: auto !important;
             max-width: 100% !important;
             margin-left: 0 !important;
@@ -429,7 +429,8 @@ class SmartBookSplitter:
         self.history_file = history_file
         self.split_size = split_size
         self.progress_map = self._load_progress()
-        self.punctuations = {'。', '！', '？', '；', '”', '’', '…', '\n'}
+        self.primary_punc = '。'
+        self.other_puncts = {'！', '？', '；', '”', '’', '…', '\n', '.', '!', '?'}
 
     def _load_progress(self):
         progress = {}
@@ -451,12 +452,10 @@ class SmartBookSplitter:
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
         
-        # 1. 处理老旧 .txt 文件（严谨的编码探测：utf-8 -> gb18030(兼容gbk/gb2312) -> utf-16）
         if ext == '.txt':
             encodings_to_try = ['utf-8', 'gb18030', 'utf-16']
             for enc in encodings_to_try:
                 try:
-                    # 先用 strict 模式严格测试是否能正确解码
                     with open(file_path, 'r', encoding=enc, errors='strict') as f:
                         text = f.read()
                         print(f"📖 成功以 [{enc}] 编码读取文本文件: {file_path}")
@@ -464,7 +463,6 @@ class SmartBookSplitter:
                 except (UnicodeDecodeError, Exception):
                     continue
             
-            # 如果所有标准编码都严格失败，最后用 gb18030 配合 replace 兜底（确保不崩）
             try:
                 with open(file_path, 'r', encoding='gb18030', errors='replace') as f:
                     print(f"⚠️ 警告: 文本文件编码复杂，已强制以 [gb18030] 兜底读取: {file_path}")
@@ -473,7 +471,6 @@ class SmartBookSplitter:
                 print(f"❌ 终极读取文本失败: {e}")
                 return ""
 
-        # 2. 处理 .epub 文件（防止内部 html 带有老旧编码）
         elif ext == '.epub':
             try:
                 text_content = []
@@ -481,7 +478,6 @@ class SmartBookSplitter:
                     for name in sorted(z.namelist()):
                         if name.endswith(('.html', '.xhtml', '.htm')):
                             raw_bytes = z.read(name)
-                            # 尝试对 epub 内页字节进行多编码解码
                             html_text = ""
                             for enc in ['utf-8', 'gb18030']:
                                 try:
@@ -504,22 +500,27 @@ class SmartBookSplitter:
                 
         return ""
 
-def run_daily_slice(self, date_str):
-        books = sorted([f for f in os.listdir('.') if f.lower().endswith(('.txt', '.epub')) and "sync_history" not in f.lower() and f not in {"requirements.txt", "README.md", "get_daily_article.py"}])
+    def run_daily_slice(self, date_str):
+        # 排除临时 epub 文件，防止误读
+        books = sorted([
+            f for f in os.listdir('.') 
+            if f.lower().endswith(('.txt', '.epub')) 
+            and not f.lower().startswith('temp_')
+            and "sync_history" not in f.lower() 
+            and f not in {"requirements.txt", "README.md", "get_daily_article.py"}
+        ])
         
         accumulated_html_parts = []
         total_collected = 0
         book_summaries = []
         first_target_name = None
 
-        # 循环切分，直到总字数达到 split_size（6000字）或者没有书可切了
         while total_collected < self.split_size:
             target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
             if not target:
                 print("📚 已经没有更多待切分的文学书了。")
                 break
 
-            # 记录今天第一本开始切的书的名字（用来还原原代码的命名）
             if not first_target_name:
                 first_target_name = target
 
@@ -537,14 +538,26 @@ def run_daily_slice(self, date_str):
 
             if end < total_len:
                 found_punc = False
-                for i in range(end, min(end + 300, total_len)):
-                    if full_text[i] in self.punctuations:
+                
+                # 6000字后 500字内优先找句号
+                for i in range(end, min(end + 500, total_len)):
+                    if full_text[i] == self.primary_punc:
                         end = i + 1
                         found_punc = True
                         break
+                
+                # 没找到句号则顺次寻找其他标点
+                if not found_punc:
+                    for i in range(end, min(end + 500, total_len)):
+                        if full_text[i] in self.other_puncts:
+                            end = i + 1
+                            found_punc = True
+                            break
+                
+                # 都没有则向回找
                 if not found_punc:
                     for i in range(end, max(start, end - 300), -1):
-                        if full_text[i] in self.punctuations:
+                        if full_text[i] == self.primary_punc or full_text[i] in self.other_puncts:
                             end = i + 1
                             break
 
@@ -568,13 +581,10 @@ def run_daily_slice(self, date_str):
 
         combined_title_desc = " + ".join(book_summaries)
         
-        # 严格对齐原代码的命名格式：{date_str}_文学_{pure_name}_第{start+1}字
-        # 这里的 start 取决于第一本书开始的位置
         first_start = self.progress_map.get(first_target_name, 0) if first_target_name else 1
         pure_name = clean_filename(first_target_name.split('.')[0]) if first_target_name else "untitled"
         display_name = f"{date_str}_文学_{pure_name}_第{first_start}字"
 
-        # 完美还原您原代码中的网页大标题风格
         raw_output = f"<h1>《{first_target_name}》 (今日版头第1章 等)</h1>" + "".join(accumulated_html_parts) + f"<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>包含书目: {combined_title_desc} | 今日总字数: {total_collected}</div>"
         
         lit_soup = BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser')
@@ -628,13 +638,19 @@ def get_gutenberg_all(h_set, date_str):
     print("📚 检查 Gutenberg (中英对照精读版)...")
     try:
         r = http_session.get("https://www.gutenberg.org/cache/epub/feeds/today.rss", headers=get_headers(), timeout=30, verify=False)
-        items = re.findall(r'<item>(.*?)</item>', r.text, re.DOTALL)
+        if not r.encoding: r.encoding = r.apparent_encoding
+        
+        # 使用 BeautifulSoup 解析 RSS 替代正则，提高鲁棒性
+        rss_soup = BeautifulSoup(r.content, 'xml')
+        items = rss_soup.find_all('item')
+        
         for it in items[:2]:
-            title_match = re.search(r'<title>(.*?)</title>', it, re.DOTALL)
-            link_match = re.search(r'<link>(.*?)</link>', it, re.DOTALL)
-            if not title_match or not link_match: continue
-            title = html.unescape(title_match.group(1).strip())
-            link = link_match.group(1).strip()
+            title_el = it.find('title')
+            link_el = it.find('link')
+            if not title_el or not link_el: continue
+            
+            title = html.unescape(title_el.text.strip())
+            link = link_el.text.strip()
             
             hid = generate_article_md5("Guten", title)
             if hid in h_set: continue
@@ -755,6 +771,9 @@ def get_user_custom_feeds(h_set, date_str):
 
 # ==================== 【主控调度模块】 ====================
 def main():
+    global GLOBAL_EPUB_ARTICLES
+    GLOBAL_EPUB_ARTICLES = []  # 每次运行前清空缓存队列，保证干净
+    
     bj = get_beijing_time()
     today = bj.strftime("%Y%m%d")
     print(f"🚀 任务启动 (高桥文学) | 北京时间: {bj.strftime('%Y-%m-%d %H:%M:%S')}")
