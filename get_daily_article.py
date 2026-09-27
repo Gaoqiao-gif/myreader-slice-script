@@ -27,11 +27,9 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 ]
 
-# B项目独立账本文件名，直接留在本地仓库中管理
 HISTORY_FILE = "sync_history_b.txt"
 LIT_HISTORY_FILE = "sync_history_lit_final_b.txt"
 
-# 全局内存文章暂存队列，用于最后合并打包成 EPUB
 GLOBAL_EPUB_ARTICLES = []
 
 def get_robust_session():
@@ -54,7 +52,6 @@ def get_beijing_time():
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     return utc_now.astimezone(datetime.timezone(datetime.timedelta(hours=8)))
 
-# ==================== 【本地账本与历史记录模块 (原子写入加固)】 ====================
 def load_history(filename=HISTORY_FILE):
     if not os.path.exists(filename): return set()
     try:
@@ -89,7 +86,6 @@ def generate_article_md5(source_name, title):
     raw_str = f"{source_name}_{norm_title}"
     return hashlib.md5(raw_str.encode('utf-8')).hexdigest()
 
-# ==================== 【智能翻译模块】 ====================
 def smart_translate(text):
     if not text.strip(): return ""
     for attempt in range(3):
@@ -100,7 +96,6 @@ def smart_translate(text):
             time.sleep(1.5)
     return "（翻译暂时不可用）"
 
-# ==================== 【全局 150 字长段落掐断与缩进辅助函数】 ====================
 def split_long_paragraph(text, target_len=150, window=10):
     if not text:
         return ""
@@ -148,7 +143,6 @@ def split_long_paragraph(text, target_len=150, window=10):
 
     return "".join(parts)
 
-# ==================== 【移动端“铁腕”适配核心处理器】 ====================
 def optimize_html_for_mobile_soup(soup):
     if not soup.head:
         if soup.html:
@@ -236,7 +230,6 @@ def optimize_html_for_mobile_soup(soup):
 
     return soup
 
-# ==================== 【坚果云 WebDAV 核心模块 & 内存拦截改造】 ====================
 def get_nutstore_auth():
     account = os.environ.get('NUTSTORE_USER') or os.environ.get('DAV_ACCOUNT')
     token = os.environ.get('NUTSTORE_PASSWORD') or os.environ.get('DAV_TOKEN')
@@ -244,7 +237,6 @@ def get_nutstore_auth():
 
 def upload_to_nutstore(file_content, target_filename):
     global GLOBAL_EPUB_ARTICLES
-    
     target_filename = clean_filename(target_filename)
     is_lit = "文学" in target_filename or "SmartBookSplitter" in target_filename
     
@@ -262,7 +254,6 @@ def upload_to_nutstore(file_content, target_filename):
     print(f"📥 [B项目内存拦截成功] 已成功归档至待打包队列: {target_filename}")
     return True
 
-# ==================== 【EPUB 电子书编纂核心函数 (B项目专属)】 ====================
 def build_and_upload_daily_epub(date_str):
     global GLOBAL_EPUB_ARTICLES
     if not GLOBAL_EPUB_ARTICLES:
@@ -289,22 +280,16 @@ def build_and_upload_daily_epub(date_str):
 
     epub_chapters = []
     for idx, art in enumerate(GLOBAL_EPUB_ARTICLES, 1):
-        c_title = art['title']
-        c_source = art['source']
-        c_html = art['content']
-        
         chapter = epub.EpubHtml(
-            title=f"[{c_source}] {c_title}"[:50],
+            title=f"[{art['source']}] {art['title']}"[:50],
             file_name=f'chap_{idx}.xhtml',
             lang='zh'
         )
-        chapter.content = c_html
-        
+        chapter.content = art['content']
         book.add_item(chapter)
         epub_chapters.append(chapter)
 
     book.toc = tuple(epub_chapters)
-    
     nav_html = epub.EpubNav()
     nav_html.title = "目录"
     nav_html.spine_attributes = {'linear': 'no'}
@@ -318,7 +303,6 @@ def build_and_upload_daily_epub(date_str):
     ))
 
     book.spine = epub_chapters
-
     epub_path = f"temp_gaoqiao_{date_str}.epub"
     epub.write_epub(epub_path, book, {})
 
@@ -327,9 +311,7 @@ def build_and_upload_daily_epub(date_str):
         print("❌ 坚果云账号密码未配置，无法上传 EPUB。")
         return False
 
-    base_url = "https://dav.jianguoyun.com/dav/MyReader"
-    upload_url = f"{base_url}/{epub_filename}"
-    
+    upload_url = f"https://dav.jianguoyun.com/dav/MyReader/{epub_filename}"
     success = False
     try:
         with open(epub_path, "rb") as f:
@@ -337,8 +319,6 @@ def build_and_upload_daily_epub(date_str):
             if r.status_code in [200, 201, 204]:
                 print(f"☁️ 成功推送《高桥文学》至坚果云: {epub_filename}")
                 success = True
-            else:
-                print(f"❌ 坚果云响应异常，状态码: {r.status_code}")
     except Exception as e:
         print(f"❌ 上传 EPUB 异常: {e}")
     finally:
@@ -347,7 +327,6 @@ def build_and_upload_daily_epub(date_str):
 
     return success
 
-# ==================== 【三个项目通用的终极 HTML 包装器】 ====================
 def wrap_to_rich_html(raw_content, title, link, date_str, source_name="CDT"):
     title = html.unescape(str(title))
     raw_content = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', str(raw_content), flags=re.DOTALL)
@@ -387,43 +366,26 @@ def wrap_to_rich_html(raw_content, title, link, date_str, source_name="CDT"):
             p_tag.replace_with(BeautifulSoup(new_html, 'html.parser'))
 
     body_html = str(soup)
-    
-    base_html = f"""
-    <!DOCTYPE html><html><head><meta charset="UTF-8">
-    </head>
+    base_html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
     <body><h1>{title}</h1><div class="meta">日期: {date_str} | 来源: {source_name}</div>
-    <article class="pdf-content-flow">{body_html}</article></body></html>
-    """
+    <article class="pdf-content-flow">{body_html}</article></body></html>"""
     
-    final_soup = BeautifulSoup(base_html, 'html.parser')
-    optimized_soup = optimize_html_for_mobile_soup(final_soup)
-    
-    return str(optimized_soup)
+    return str(optimize_html_for_mobile_soup(BeautifulSoup(base_html, 'html.parser')))
 
-# ==================== 【通用全文抓取增强函数】 ====================
 def fetch_full_content_if_needed(link, raw_content):
     soup_check = BeautifulSoup(raw_content, 'html.parser')
     clean_text = soup_check.get_text().strip()
-    
     if len(clean_text) < 300 and link and link.startswith('http'):
-        print(f"🔗 检测到内容较短，正在通过原文链接获取完整正文: {link}")
         try:
             res = http_session.get(link, headers=get_headers(), timeout=15, verify=False)
             if res.status_code == 200:
                 page_soup = BeautifulSoup(res.text, 'html.parser')
-                content_div = (
-                    page_soup.find('div', class_='entry-content') or 
-                    page_soup.find('article') or 
-                    page_soup.find('div', class_='post-content')
-                )
-                if content_div:
-                    return str(content_div)
-        except Exception as e:
-            print(f"⚠️ 抓取原文链接失败: {e}")
-            
+                content_div = page_soup.find('div', class_='entry-content') or page_soup.find('article') or page_soup.find('div', class_='post-content')
+                if content_div: return str(content_div)
+        except: pass
     return raw_content
 
-# ==================== 【文学书分段逻辑 (编码加固版)】 ====================
+# ==================== 【文学书分段逻辑 (跨书连续凑足 6000 字版)】 ====================
 class SmartBookSplitter:
     def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
@@ -451,25 +413,16 @@ class SmartBookSplitter:
 
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
-        
         if ext == '.txt':
-            encodings_to_try = ['utf-8', 'gb18030', 'utf-16']
-            for enc in encodings_to_try:
+            for enc in ['utf-8', 'gb18030', 'utf-16']:
                 try:
                     with open(file_path, 'r', encoding=enc, errors='strict') as f:
-                        text = f.read()
-                        print(f"📖 成功以 [{enc}] 编码读取文本文件: {file_path}")
-                        return text
-                except (UnicodeDecodeError, Exception):
-                    continue
-            
+                        return f.read()
+                except: continue
             try:
                 with open(file_path, 'r', encoding='gb18030', errors='replace') as f:
-                    print(f"⚠️ 警告: 文本文件编码复杂，已强制以 [gb18030] 兜底读取: {file_path}")
                     return f.read()
-            except Exception as e:
-                print(f"❌ 终极读取文本失败: {e}")
-                return ""
+            except: return ""
 
         elif ext == '.epub':
             try:
@@ -483,25 +436,17 @@ class SmartBookSplitter:
                                 try:
                                     html_text = raw_bytes.decode(enc)
                                     break
-                                except UnicodeDecodeError:
-                                    continue
-                            if not html_text:
-                                html_text = raw_bytes.decode('gb18030', errors='replace')
-                                
+                                except: continue
+                            if not html_text: html_text = raw_bytes.decode('gb18030', errors='replace')
                             soup = BeautifulSoup(html_text, 'html.parser')
                             for el in soup.find_all(['p', 'h1', 'h2', 'div']):
                                 t = el.get_text().strip()
                                 if t: text_content.append(t)
-                print(f"📖 成功解析 EPUB 电子书: {file_path}")
                 return "\n\n".join(text_content)
-            except Exception as e:
-                print(f"❌ 解析 EPUB 失败: {e}")
-                pass
-                
+            except: pass
         return ""
 
     def run_daily_slice(self, date_str):
-        # 排除临时 epub 文件，防止误读
         books = sorted([
             f for f in os.listdir('.') 
             if f.lower().endswith(('.txt', '.epub')) 
@@ -514,15 +459,19 @@ class SmartBookSplitter:
         total_collected = 0
         book_summaries = []
         first_target_name = None
+        first_start_pos = 1
 
+        # 【核心修改】：只要总收集字数没达到 split_size (6000字)，就持续寻找下一本书切分
         while total_collected < self.split_size:
+            # 寻找下一本进度不是 -1 的书
             target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
             if not target:
-                print("📚 已经没有更多待切分的文学书了。")
+                print("📚 已经没有更多待切分的文学书了（所有书籍均已读完）。")
                 break
 
             if not first_target_name:
                 first_target_name = target
+                first_start_pos = self.progress_map.get(target, 0) + 1
 
             full_text = self._extract_text(target).replace('\r', '')
             total_len = len(full_text)
@@ -533,20 +482,22 @@ class SmartBookSplitter:
                 self._save_progress()
                 continue
 
+            # 本次还需要多少字才能凑够 6000 字
             needed = self.split_size - total_collected
             end = min(start + needed, total_len)
 
+            # 如果不是正好到文件末尾，说明需要进行 6000 字后的标点智能掐断
             if end < total_len:
                 found_punc = False
                 
-                # 6000字后 500字内优先找句号
+                # 1. 在 6000字后 500字内优先找句号 '。'
                 for i in range(end, min(end + 500, total_len)):
                     if full_text[i] == self.primary_punc:
                         end = i + 1
                         found_punc = True
                         break
                 
-                # 没找到句号则顺次寻找其他标点
+                # 2. 如果没找到句号，顺次寻找其他标点符号
                 if not found_punc:
                     for i in range(end, min(end + 500, total_len)):
                         if full_text[i] in self.other_puncts:
@@ -554,7 +505,7 @@ class SmartBookSplitter:
                             found_punc = True
                             break
                 
-                # 都没有则向回找
+                # 3. 向回找兜底
                 if not found_punc:
                     for i in range(end, max(start, end - 300), -1):
                         if full_text[i] == self.primary_punc or full_text[i] in self.other_puncts:
@@ -567,33 +518,31 @@ class SmartBookSplitter:
             book_summaries.append(f"《{target}》(进度:{start+1}-{end})")
             accumulated_html_parts.append(f"<div style='margin-bottom:30px;'><h2 style='color:#555;'>选自: 《{target}》</h2>{chunk_html}</div>")
 
-            total_collected += len(slice_text)
+            collected_this_time = len(slice_text)
+            total_collected += collected_this_time
 
+            # 更新该书的读书进度：如果读完了就标记为 -1，否则更新到新的 end 位置
             new_progress = end if end < total_len else -1
             self.progress_map[target] = new_progress
             self._save_progress()
             
-            print(f"📖 已从《{target}》切分 {len(slice_text)} 字 (当前累计: {total_collected}/{self.split_size} 字)")
+            print(f"📖 已从《{target}》切分 {collected_this_time} 字 (当前累计总字数: {total_collected}/{self.split_size} 字)")
 
         if not accumulated_html_parts:
             print("📚 今日没有收集到任何文学内容。")
             return
 
         combined_title_desc = " + ".join(book_summaries)
-        
-        first_start = self.progress_map.get(first_target_name, 0) if first_target_name else 1
         pure_name = clean_filename(first_target_name.split('.')[0]) if first_target_name else "untitled"
-        display_name = f"{date_str}_文学_{pure_name}_第{first_start}字"
+        display_name = f"{date_str}_文学_{pure_name}_第{first_start_pos}字"
 
-        raw_output = f"<h1>《{first_target_name}》 (今日版头第1章 等)</h1>" + "".join(accumulated_html_parts) + f"<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>包含书目: {combined_title_desc} | 今日总字数: {total_collected}</div>"
+        raw_output = f"<h1>《{first_target_name}》 (等合集)</h1>" + "".join(accumulated_html_parts) + f"<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>包含书目: {combined_title_desc} | 今日总字数: {total_collected}</div>"
         
-        lit_soup = BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser')
-        optimized_lit_soup = optimize_html_for_mobile_soup(lit_soup)
-        html_output = str(optimized_lit_soup)
+        optimized_lit_soup = optimize_html_for_mobile_soup(BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser'))
+        
+        if upload_to_nutstore(str(optimized_lit_soup), display_name):
+            print(f"✅ 高桥文学书多书跨书凑满切片成功: {display_name} (总字数: {total_collected})")
 
-        if upload_to_nutstore(html_output, display_name):
-            print(f"✅ 高桥文学书切片拦截成功: {display_name} (总字数: {total_collected})")
-            
 # ==================== 【资讯抓取模块】 ====================
 def get_cdt_all(h_set, date_str):
     print("🌐 正在扫描 CDT 全文...")
@@ -610,11 +559,8 @@ def get_cdt_all(h_set, date_str):
                 time.sleep(random.uniform(1.5, 3))
                 tag = item.find('content:encoded') or item.find('encoded')
                 raw = tag.text if tag else item.find('description').text
-                
                 raw = fetch_full_content_if_needed(link, raw)
-                
-                filename_with_date = f"{date_str}_{s_name}_{clean_filename(title)}"
-                if upload_to_nutstore(wrap_to_rich_html(raw, title, link, date_str, s_name), filename_with_date):
+                if upload_to_nutstore(wrap_to_rich_html(raw, title, link, date_str, s_name), f"{date_str}_{s_name}_{clean_filename(title)}"):
                     save_to_history_safely(hid, HISTORY_FILE)
                     h_set.add(hid)
         except Exception as e:
@@ -623,9 +569,8 @@ def get_cdt_all(h_set, date_str):
 def get_wiki_all(date_str):
     print("🌍 抓取 Wiki 今日特色...")
     y, m, d = date_str[:4], date_str[4:6], date_str[6:8]
-    url = f"https://zh.wikipedia.org/api/rest_v1/feed/featured/{y}/{m}/{d}"
     try:
-        resp = http_session.get(url, headers=get_headers(), timeout=20, verify=False)
+        resp = http_session.get(f"https://zh.wikipedia.org/api/rest_v1/feed/featured/{y}/{m}/{d}", headers=get_headers(), timeout=20, verify=False)
         tfa = resp.json().get('tfa')
         if tfa:
             title = html.unescape(tfa.get('title'))
@@ -639,19 +584,13 @@ def get_gutenberg_all(h_set, date_str):
     try:
         r = http_session.get("https://www.gutenberg.org/cache/epub/feeds/today.rss", headers=get_headers(), timeout=30, verify=False)
         if not r.encoding: r.encoding = r.apparent_encoding
-        
-        # 使用 BeautifulSoup 解析 RSS 替代正则，提高鲁棒性
         rss_soup = BeautifulSoup(r.content, 'xml')
-        items = rss_soup.find_all('item')
-        
-        for it in items[:2]:
+        for it in rss_soup.find_all('item')[:2]:
             title_el = it.find('title')
             link_el = it.find('link')
             if not title_el or not link_el: continue
-            
             title = html.unescape(title_el.text.strip())
             link = link_el.text.strip()
-            
             hid = generate_article_md5("Guten", title)
             if hid in h_set: continue
             
@@ -662,7 +601,6 @@ def get_gutenberg_all(h_set, date_str):
             tr = http_session.get(f"https://www.gutenberg.org/cache/epub/{bid}/pg{bid}.txt", headers=get_headers(), timeout=20, verify=False)
             if tr.status_code != 200:
                 tr = http_session.get(f"https://www.gutenberg.org/files/{bid}/{bid}-0.txt", headers=get_headers(), timeout=20, verify=False)
-                
             if tr.status_code == 200:
                 paras = [p.strip() for p in tr.text[:15000].split('\n\n') if len(p.strip()) > 30]
                 bil_list = []
@@ -672,30 +610,15 @@ def get_gutenberg_all(h_set, date_str):
                     if len(clean_p) > 150:
                         sub_text = clean_p[:150]
                         last_punct = max(sub_text.rfind('.'), sub_text.rfind('?'), sub_text.rfind('!'))
-                        if last_punct > 50:
-                            clean_p = sub_text[:last_punct + 1]
-                        else:
-                            clean_p = sub_text + "..."
+                        clean_p = sub_text[:last_punct + 1] if last_punct > 50 else sub_text + "..."
                     
                     zh_trans = smart_translate(clean_p)
-                    
-                    formatted_en = split_long_paragraph(clean_p)
-                    formatted_zh = split_long_paragraph(zh_trans)
-                    
-                    bil_list.append(
-                        f"<div style='margin-bottom: 25px;'>"
-                        f"<div style='font-size: 17.5px; line-height: 1.8; color: #2c3e50;'>{formatted_en}</div>"
-                        f"<div style='font-size: 16.5px; line-height: 1.8; color: #7f8c8d; margin-top: 8px;'>{formatted_zh}</div>"
-                        f"</div>"
-                    )
+                    bil_list.append(f"<div style='margin-bottom: 25px;'><div style='font-size: 17.5px; line-height: 1.8; color: #2c3e50;'>{split_long_paragraph(clean_p)}</div><div style='font-size: 16.5px; line-height: 1.8; color: #7f8c8d; margin-top: 8px;'>{split_long_paragraph(zh_trans)}</div></div>")
                     time.sleep(1)
                 
-                bil = "".join(bil_list)
-                filename_with_date = f"{date_str}_Guten_精读_{clean_filename(title)}"
-                if upload_to_nutstore(wrap_to_rich_html(bil, f"[英语精读] {title}", link, date_str, "Gutenberg"), filename_with_date):
+                if upload_to_nutstore(wrap_to_rich_html("".join(bil_list), f"[英语精读] {title}", link, date_str, "Gutenberg"), f"{date_str}_Guten_精读_{clean_filename(title)}"):
                     save_to_history_safely(hid, HISTORY_FILE)
                     h_set.add(hid)
-                    print(f"✅ Gutenberg 英语精读版拦截成功: {title}")
     except Exception as e:
         print(f"⚠️ Gutenberg 抓取异常: {e}")
 
@@ -709,7 +632,6 @@ def get_user_custom_feeds(h_set, date_str):
         ("今日诗词", "https://v2.jinrishici.com/one.json?client=python-script"),
         ("一言古诗词", "https://v1.hitokoto.cn/?c=i&encode=text"),
     ]
-    
     for s_name, url in feeds_list:
         try:
             r = http_session.get(url, headers=get_headers(), timeout=30, verify=False)
@@ -721,24 +643,16 @@ def get_user_custom_feeds(h_set, date_str):
                     c, o = data['data']['content'], data['data']['origin']
                     title = html.unescape(f"《{o['title']}》-{o['author']}")
                     hid = generate_article_md5(s_name, title)
-                    if hid not in h_set:
-                        raw = f"<div style='text-align:center;'><h2>{c}</h2><p>——{o['author']}《{o['title']}》</p></div>"
-                        filename_with_date = f"{date_str}_{s_name}_{clean_filename(o['title'])}"
-                        if upload_to_nutstore(wrap_to_rich_html(raw, title, "https://www.jinrishici.com/", date_str, s_name), filename_with_date):
-                            save_to_history_safely(hid, HISTORY_FILE)
-                            h_set.add(hid)
+                    if hid not in h_set and upload_to_nutstore(wrap_to_rich_html(f"<div style='text-align:center;'><h2>{c}</h2><p>——{o['author']}《{o['title']}》</p></div>", title, "https://www.jinrishici.com/", date_str, s_name), f"{date_str}_{s_name}_{clean_filename(o['title'])}"):
+                        save_to_history_safely(hid, HISTORY_FILE); h_set.add(hid)
                 continue
 
             if s_name == "一言古诗词" and "encode=text" in url:
                 title = html.unescape(r.text.strip())
                 if title:
                     hid = generate_article_md5(s_name, title)
-                    if hid not in h_set:
-                        raw = f"<div style='text-align:center;'><h2>{title}</h2></div>"
-                        filename_with_date = f"{date_str}_{s_name}_{clean_filename(title[:20])}"
-                        if upload_to_nutstore(wrap_to_rich_html(raw, title, "https://hitokoto.cn/", date_str, s_name), filename_with_date):
-                            save_to_history_safely(hid, HISTORY_FILE)
-                            h_set.add(hid)
+                    if hid not in h_set and upload_to_nutstore(wrap_to_rich_html(f"<div style='text-align:center;'><h2>{title}</h2></div>", title, "https://hitokoto.cn/", date_str, s_name), f"{date_str}_{s_name}_{clean_filename(title[:20])}"):
+                        save_to_history_safely(hid, HISTORY_FILE); h_set.add(hid)
                 continue
 
             soup = BeautifulSoup(r.content, 'xml')
@@ -746,33 +660,22 @@ def get_user_custom_feeds(h_set, date_str):
                 title_el = item.find('title')
                 if not title_el: continue
                 title = html.unescape(title_el.text.strip())
-                
                 link_el = item.find('link')
-                link = ""
-                if link_el:
-                    link = link_el.get('href') if link_el.get('href') else link_el.text.strip()
-                
+                link = link_el.get('href') if (link_el and link_el.get('href')) else (link_el.text.strip() if link_el else "")
                 hid = generate_article_md5(s_name, title)
                 if hid in h_set: continue
-                
                 tag = item.find(['content:encoded', 'encoded', 'content', 'description', 'summary'])
                 raw = tag.text if tag else "（空）"
-                
-                if "CDT" in s_name:
-                    raw = fetch_full_content_if_needed(link, raw)
-                
-                filename_with_date = f"{date_str}_{s_name}_{clean_filename(title)}"
-                if upload_to_nutstore(wrap_to_rich_html(raw, title, link, date_str, s_name), filename_with_date):
+                if "CDT" in s_name: raw = fetch_full_content_if_needed(link, raw)
+                if upload_to_nutstore(wrap_to_rich_html(raw, title, link, date_str, s_name), f"{date_str}_{s_name}_{clean_filename(title)}"):
                     save_to_history_safely(hid, HISTORY_FILE)
                     h_set.add(hid)
         except Exception as e:
-            print(f"⚠️ 自定义源 [{s_name}] 抓取或解析失败: {e}")
-            continue
+            print(f"⚠️ 自定义源 [{s_name}] 抓取失败: {e}")
 
-# ==================== 【主控调度模块】 ====================
 def main():
     global GLOBAL_EPUB_ARTICLES
-    GLOBAL_EPUB_ARTICLES = []  # 每次运行前清空缓存队列，保证干净
+    GLOBAL_EPUB_ARTICLES = []
     
     bj = get_beijing_time()
     today = bj.strftime("%Y%m%d")
@@ -787,7 +690,6 @@ def main():
     get_user_custom_feeds(h_set, today)
     
     epub_success = build_and_upload_daily_epub(today)
-    
     if epub_success:
         print("🏁 所有任务执行完毕，《高桥文学》电子书已成功同步至坚果云，本地对账本已更新。")
     else:
