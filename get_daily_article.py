@@ -504,55 +504,85 @@ class SmartBookSplitter:
                 
         return ""
 
-    def run_daily_slice(self, date_str):
+def run_daily_slice(self, date_str):
         books = sorted([f for f in os.listdir('.') if f.lower().endswith(('.txt', '.epub')) and "sync_history" not in f.lower() and f not in {"requirements.txt", "README.md", "get_daily_article.py"}])
-        target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
-        if not target:
-            print("📚 没有发现待切分的新文学书。")
-            return
-
-        print(f"📖 正在分发文学书版头: 《{target}》")
-        full_text = self._extract_text(target).replace('\r', '')
-        total = len(full_text)
-        start = self.progress_map.get(target, 0)
-
-        if start >= total:
-            self.progress_map[target] = -1
-            self._save_progress()
-            return
-
-        end = min(start + self.split_size, total)
         
-        if end < total:
-            found_punc = False
-            for i in range(end, min(end + 300, total)):
-                if full_text[i] in self.punctuations:
-                    end = i + 1
-                    found_punc = True
-                    break
-            
-            if not found_punc:
-                for i in range(end, max(start, end - 300), -1):
+        accumulated_html_parts = []
+        total_collected = 0
+        book_summaries = []
+        first_target_name = None
+
+        # 循环切分，直到总字数达到 split_size（6000字）或者没有书可切了
+        while total_collected < self.split_size:
+            target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
+            if not target:
+                print("📚 已经没有更多待切分的文学书了。")
+                break
+
+            # 记录今天第一本开始切的书的名字（用来还原原代码的命名）
+            if not first_target_name:
+                first_target_name = target
+
+            full_text = self._extract_text(target).replace('\r', '')
+            total_len = len(full_text)
+            start = self.progress_map.get(target, 0)
+
+            if start >= total_len:
+                self.progress_map[target] = -1
+                self._save_progress()
+                continue
+
+            needed = self.split_size - total_collected
+            end = min(start + needed, total_len)
+
+            if end < total_len:
+                found_punc = False
+                for i in range(end, min(end + 300, total_len)):
                     if full_text[i] in self.punctuations:
                         end = i + 1
+                        found_punc = True
                         break
+                if not found_punc:
+                    for i in range(end, max(start, end - 300), -1):
+                        if full_text[i] in self.punctuations:
+                            end = i + 1
+                            break
 
-        slice_text = full_text[start:end]
+            slice_text = full_text[start:end]
+            chunk_html = "".join([split_long_paragraph(p) for p in slice_text.split('\n') if p.strip()])
+            
+            book_summaries.append(f"《{target}》(进度:{start+1}-{end})")
+            accumulated_html_parts.append(f"<div style='margin-bottom:30px;'><h2 style='color:#555;'>选自: 《{target}》</h2>{chunk_html}</div>")
+
+            total_collected += len(slice_text)
+
+            new_progress = end if end < total_len else -1
+            self.progress_map[target] = new_progress
+            self._save_progress()
+            
+            print(f"📖 已从《{target}》切分 {len(slice_text)} 字 (当前累计: {total_collected}/{self.split_size} 字)")
+
+        if not accumulated_html_parts:
+            print("📚 今日没有收集到任何文学内容。")
+            return
+
+        combined_title_desc = " + ".join(book_summaries)
         
-        body_html = "".join([split_long_paragraph(p) for p in slice_text.split('\n') if p.strip()])
-        pure_name = clean_filename(target.split('.')[0])
-        display_name = f"{date_str}_文学_{pure_name}_第{start+1}字"
-        
-        raw_output = f"<h1>《{target}》 (今日版头第1章)</h1>{body_html}<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>进度: {start+1}-{end} | 总计: {total}</div>"
+        # 严格对齐原代码的命名格式：{date_str}_文学_{pure_name}_第{start+1}字
+        # 这里的 start 取决于第一本书开始的位置
+        first_start = self.progress_map.get(first_target_name, 0) if first_target_name else 1
+        pure_name = clean_filename(first_target_name.split('.')[0]) if first_target_name else "untitled"
+        display_name = f"{date_str}_文学_{pure_name}_第{first_start}字"
+
+        # 完美还原您原代码中的网页大标题风格
+        raw_output = f"<h1>《{first_target_name}》 (今日版头第1章 等)</h1>" + "".join(accumulated_html_parts) + f"<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>包含书目: {combined_title_desc} | 今日总字数: {total_collected}</div>"
         
         lit_soup = BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser')
         optimized_lit_soup = optimize_html_for_mobile_soup(lit_soup)
         html_output = str(optimized_lit_soup)
 
         if upload_to_nutstore(html_output, display_name):
-            print(f"✅ 高桥文学书切片拦截成功: {display_name} (字数: {len(slice_text)})")
-            self.progress_map[target] = end if end < total else -1
-            self._save_progress()
+            print(f"✅ 高桥文学书切片拦截成功: {display_name} (总字数: {total_collected})")
             
 # ==================== 【资讯抓取模块】 ====================
 def get_cdt_all(h_set, date_str):
