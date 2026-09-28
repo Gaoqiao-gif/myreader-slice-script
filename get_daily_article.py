@@ -8,6 +8,7 @@ import hashlib
 import urllib.parse
 import zipfile
 import html
+import shutil
 import requests
 import urllib3
 from bs4 import BeautifulSoup
@@ -385,7 +386,7 @@ def fetch_full_content_if_needed(link, raw_content):
         except: pass
     return raw_content
 
-# ==================== 【文学书分段逻辑 (跨书连续凑足 6000 字版)】 ====================
+# ==================== 【文学书分段逻辑 (全格式全能切书器版)】 ====================
 class SmartBookSplitter:
     def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
@@ -413,6 +414,8 @@ class SmartBookSplitter:
 
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
+        
+        # 1. 文本格式 (.txt)
         if ext == '.txt':
             for enc in ['utf-8', 'gb18030', 'utf-16']:
                 try:
@@ -424,6 +427,7 @@ class SmartBookSplitter:
                     return f.read()
             except: return ""
 
+        # 2. EPUB 电子书格式 (.epub)
         elif ext == '.epub':
             try:
                 text_content = []
@@ -443,13 +447,54 @@ class SmartBookSplitter:
                                 t = el.get_text().strip()
                                 if t: text_content.append(t)
                 return "\n\n".join(text_content)
-            except: pass
+            except Exception as e:
+                print(f"⚠️ 解析 EPUB 异常 [{file_path}]: {e}")
+                pass
+
+        # 3. MOBI / AZW3 电子书格式 (.mobi, .azw3)
+        elif ext in ['.mobi', '.azw3']:
+            temp_dir = None
+            try:
+                import mobi
+                temp_dir, filepath = mobi.extract(file_path)
+                
+                text_content = []
+                # 如果解压出来是一个文件
+                if os.path.isfile(filepath):
+                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                        soup = BeautifulSoup(f.read(), 'html.parser')
+                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                            t = el.get_text().strip()
+                            if t: text_content.append(t)
+                # 如果解压出来是一个目录
+                elif os.path.isdir(filepath):
+                    for root, dirs, files in os.walk(filepath):
+                        for file in sorted(files):
+                            if file.lower().endswith(('.html', '.xhtml', '.htm', '.ncx')):
+                                f_path = os.path.join(root, file)
+                                try:
+                                    with open(f_path, 'r', encoding='utf-8', errors='replace') as f:
+                                        soup = BeautifulSoup(f.read(), 'html.parser')
+                                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                                            t = el.get_text().strip()
+                                            if t: text_content.append(t)
+                                except: continue
+                return "\n\n".join(text_content)
+            except Exception as e:
+                print(f"⚠️ 解析 MOBI/AZW3 异常 [{file_path}]: {e}")
+                pass
+            finally:
+                if temp_dir and os.path.exists(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir)
+                    except: pass
+
         return ""
 
     def run_daily_slice(self, date_str):
         books = sorted([
             f for f in os.listdir('.') 
-            if f.lower().endswith(('.txt', '.epub')) 
+            if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3')) 
             and not f.lower().startswith('temp_')
             and "sync_history" not in f.lower() 
             and f not in {"requirements.txt", "README.md", "get_daily_article.py"}
@@ -461,9 +506,7 @@ class SmartBookSplitter:
         first_target_name = None
         first_start_pos = 1
 
-        # 【核心修改】：只要总收集字数没达到 split_size (6000字)，就持续寻找下一本书切分
         while total_collected < self.split_size:
-            # 寻找下一本进度不是 -1 的书
             target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
             if not target:
                 print("📚 已经没有更多待切分的文学书了（所有书籍均已读完）。")
@@ -482,22 +525,18 @@ class SmartBookSplitter:
                 self._save_progress()
                 continue
 
-            # 本次还需要多少字才能凑够 6000 字
             needed = self.split_size - total_collected
             end = min(start + needed, total_len)
 
-            # 如果不是正好到文件末尾，说明需要进行 6000 字后的标点智能掐断
             if end < total_len:
                 found_punc = False
                 
-                # 1. 在 6000字后 500字内优先找句号 '。'
                 for i in range(end, min(end + 500, total_len)):
                     if full_text[i] == self.primary_punc:
                         end = i + 1
                         found_punc = True
                         break
                 
-                # 2. 如果没找到句号，顺次寻找其他标点符号
                 if not found_punc:
                     for i in range(end, min(end + 500, total_len)):
                         if full_text[i] in self.other_puncts:
@@ -505,7 +544,6 @@ class SmartBookSplitter:
                             found_punc = True
                             break
                 
-                # 3. 向回找兜底
                 if not found_punc:
                     for i in range(end, max(start, end - 300), -1):
                         if full_text[i] == self.primary_punc or full_text[i] in self.other_puncts:
@@ -521,7 +559,6 @@ class SmartBookSplitter:
             collected_this_time = len(slice_text)
             total_collected += collected_this_time
 
-            # 更新该书的读书进度：如果读完了就标记为 -1，否则更新到新的 end 位置
             new_progress = end if end < total_len else -1
             self.progress_map[target] = new_progress
             self._save_progress()
