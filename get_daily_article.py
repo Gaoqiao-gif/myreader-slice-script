@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import fitz  # PyMuPDF for PDF extraction
 
 # ==================== 【1. 环境与伪装配置 (B项目专属)】 ====================
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -412,6 +413,52 @@ class SmartBookSplitter:
         with open(self.history_file, "w", encoding="utf-8") as f:
             f.write(content)
 
+    def _read_pdf_to_text(self, pdf_path):
+        """使用 PyMuPDF (fitz) 精准提取 PDF 文本并智能合并硬换行排版"""
+        extracted_text_blocks = []
+        try:
+            doc = fitz.open(pdf_path)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                page_text = page.get_text("text")
+                if not page_text:
+                    continue
+                
+                # 按行拆分，过滤空白行
+                lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+                if not lines:
+                    continue
+
+                fixed_paragraphs = []
+                current_para = lines[0]
+
+                for i in range(1, len(lines)):
+                    prev_line = lines[i - 1]
+                    curr_line = lines[i]
+
+                    # 判断上一行结尾是否为句子结束标点或引号
+                    ends_with_terminal = prev_line.endswith(('。', '！', '？', '；', '.', '!', '?', '"', '”', '’'))
+                    
+                    if ends_with_terminal:
+                        # 句意结束，作为独立段落结算
+                        fixed_paragraphs.append(current_para)
+                        current_para = curr_line
+                    else:
+                        # 行末没有结束标点，属于PDF硬换行，将其平滑拼接
+                        current_para += " " + curr_line
+
+                if current_para:
+                    fixed_paragraphs.append(current_para)
+
+                # 将当前页整理好的段落用双换行拼接
+                extracted_text_blocks.append("\n\n".join(fixed_paragraphs))
+
+            doc.close()
+            return "\n\n".join(extracted_text_blocks)
+        except Exception as e:
+            print(f"⚠️ 解析 PDF 异常 [{pdf_path}]: {e}")
+            return ""
+
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
         
@@ -459,14 +506,12 @@ class SmartBookSplitter:
                 temp_dir, filepath = mobi.extract(file_path)
                 
                 text_content = []
-                # 如果解压出来是一个文件
                 if os.path.isfile(filepath):
                     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
                         soup = BeautifulSoup(f.read(), 'html.parser')
                         for el in soup.find_all(['p', 'h1', 'h2', 'div']):
                             t = el.get_text().strip()
                             if t: text_content.append(t)
-                # 如果解压出来是一个目录
                 elif os.path.isdir(filepath):
                     for root, dirs, files in os.walk(filepath):
                         for file in sorted(files):
@@ -489,12 +534,16 @@ class SmartBookSplitter:
                         shutil.rmtree(temp_dir)
                     except: pass
 
+        # 4. PDF 电子书格式 (.pdf)
+        elif ext == '.pdf':
+            return self._read_pdf_to_text(file_path)
+
         return ""
 
     def run_daily_slice(self, date_str):
         books = sorted([
             f for f in os.listdir('.') 
-            if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3')) 
+            if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3', '.pdf')) 
             and not f.lower().startswith('temp_')
             and "sync_history" not in f.lower() 
             and f not in {"requirements.txt", "README.md", "get_daily_article.py"}
