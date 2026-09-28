@@ -387,7 +387,8 @@ def fetch_full_content_if_needed(link, raw_content):
         except: pass
     return raw_content
 
-# ==================== 【文学书分段逻辑 (全格式全能切书器版)】 ====================
+
+# ==================== 【文学书分段逻辑 (全格式全能切书器版 - 已修复断点续读 Bug)】 ====================
 class SmartBookSplitter:
     def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
@@ -406,6 +407,7 @@ class SmartBookSplitter:
                         try:
                             progress[parts[0].strip()] = int(parts[1].strip())
                         except: pass
+        print(f"📖 [切书器] 已成功加载历史进度记录，共包含 {len(progress)} 本书的存档状态。")
         return progress
 
     def _save_progress(self):
@@ -414,7 +416,6 @@ class SmartBookSplitter:
             f.write(content)
 
     def _read_pdf_to_text(self, pdf_path):
-        """使用 PyMuPDF (fitz) 精准提取 PDF 文本并智能合并硬换行排版"""
         extracted_text_blocks = []
         try:
             doc = fitz.open(pdf_path)
@@ -424,7 +425,6 @@ class SmartBookSplitter:
                 if not page_text:
                     continue
                 
-                # 按行拆分，过滤空白行
                 lines = [line.strip() for line in page_text.splitlines() if line.strip()]
                 if not lines:
                     continue
@@ -436,21 +436,17 @@ class SmartBookSplitter:
                     prev_line = lines[i - 1]
                     curr_line = lines[i]
 
-                    # 判断上一行结尾是否为句子结束标点或引号
                     ends_with_terminal = prev_line.endswith(('。', '！', '？', '；', '.', '!', '?', '"', '”', '’'))
                     
                     if ends_with_terminal:
-                        # 句意结束，作为独立段落结算
                         fixed_paragraphs.append(current_para)
                         current_para = curr_line
                     else:
-                        # 行末没有结束标点，属于PDF硬换行，将其平滑拼接
                         current_para += " " + curr_line
 
                 if current_para:
                     fixed_paragraphs.append(current_para)
 
-                # 将当前页整理好的段落用双换行拼接
                 extracted_text_blocks.append("\n\n".join(fixed_paragraphs))
 
             doc.close()
@@ -462,7 +458,6 @@ class SmartBookSplitter:
     def _extract_text(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
         
-        # 1. 文本格式 (.txt)
         if ext == '.txt':
             for enc in ['utf-8', 'gb18030', 'utf-16']:
                 try:
@@ -474,7 +469,6 @@ class SmartBookSplitter:
                     return f.read()
             except: return ""
 
-        # 2. EPUB 电子书格式 (.epub)
         elif ext == '.epub':
             try:
                 text_content = []
@@ -498,7 +492,6 @@ class SmartBookSplitter:
                 print(f"⚠️ 解析 EPUB 异常 [{file_path}]: {e}")
                 pass
 
-        # 3. MOBI / AZW3 电子书格式 (.mobi, .azw3)
         elif ext in ['.mobi', '.azw3']:
             temp_dir = None
             try:
@@ -534,13 +527,13 @@ class SmartBookSplitter:
                         shutil.rmtree(temp_dir)
                     except: pass
 
-        # 4. PDF 电子书格式 (.pdf)
         elif ext == '.pdf':
             return self._read_pdf_to_text(file_path)
 
         return ""
 
     def run_daily_slice(self, date_str):
+        # 【核心优化点】使用稳定排序方式保证每次查找顺序完全一致
         books = sorted([
             f for f in os.listdir('.') 
             if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3', '.pdf')) 
@@ -556,23 +549,27 @@ class SmartBookSplitter:
         first_start_pos = 1
 
         while total_collected < self.split_size:
+            # 过滤掉已经读完（进度值为 -1）的书本
             target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
             if not target:
                 print("📚 已经没有更多待切分的文学书了（所有书籍均已读完）。")
                 break
 
-            if not first_target_name:
-                first_target_name = target
-                first_start_pos = self.progress_map.get(target, 0) + 1
-
             full_text = self._extract_text(target).replace('\r', '')
             total_len = len(full_text)
             start = self.progress_map.get(target, 0)
 
-            if start >= total_len:
+            # 如果当前书本实际文本为空或已经读到尽头
+            if total_len == 0 or start >= total_len:
                 self.progress_map[target] = -1
                 self._save_progress()
                 continue
+
+            if not first_target_name:
+                first_target_name = target
+                first_start_pos = start + 1
+
+            print(f"📖 准备从《{target}》当前进度位置 [{start} / 总字数: {total_len}] 开始切分...")
 
             needed = self.split_size - total_collected
             end = min(start + needed, total_len)
@@ -608,11 +605,12 @@ class SmartBookSplitter:
             collected_this_time = len(slice_text)
             total_collected += collected_this_time
 
+            # 更新进度：如果切到了书本末尾，则设为 -1，否则记录最新的字符偏移量
             new_progress = end if end < total_len else -1
             self.progress_map[target] = new_progress
             self._save_progress()
             
-            print(f"📖 已从《{target}》切分 {collected_this_time} 字 (当前累计总字数: {total_collected}/{self.split_size} 字)")
+            print(f"✅ 已从《{target}》切分 {collected_this_time} 字 | 本书最新断点位置: {new_progress} (当前累计总字数: {total_collected}/{self.split_size} 字)")
 
         if not accumulated_html_parts:
             print("📚 今日没有收集到任何文学内容。")
@@ -627,7 +625,7 @@ class SmartBookSplitter:
         optimized_lit_soup = optimize_html_for_mobile_soup(BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser'))
         
         if upload_to_nutstore(str(optimized_lit_soup), display_name):
-            print(f"✅ 高桥文学书多书跨书凑满切片成功: {display_name} (总字数: {total_collected})")
+            print(f"🎉 高桥文学书多书跨书凑满切片成功: {display_name} (总字数: {total_collected})")
 
 # ==================== 【资讯抓取模块】 ====================
 def get_cdt_all(h_set, date_str):
