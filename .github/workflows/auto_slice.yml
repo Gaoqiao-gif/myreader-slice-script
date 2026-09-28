@@ -35,20 +35,19 @@ jobs:
       run: |
         python get_daily_article.py
 
-    # ==================== 👇 修复后的提交与推送步骤 👇 ====================
-    - name: Commit and push history files
+    - name: 自动同步本地对账本回 GitHub 仓库
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
         
-        # 检查是否有文件改动
+        # 检查是否有对账本文件发生了变动
         git status
         
-        # 自动抓取并添加同步账本
-        git add sync_history_b.txt sync_history_lit_final_b.txt sync_history_lit_final.txt || true
+        # 将更新后的本地对账本文件加入暂存区
+        git add sync_history_b.txt sync_history_lit_final_b.txt || true
         
-        # 提交更改（如果没变化则跳过，防止报错）
-        git commit -m "Auto update reader history records [skip ci]" || echo "No changes to commit"
+        # 如果没有内容发生改变，跳过 commit
+        git diff --staged --quiet || git commit -m "chore: auto-update local book sync histories [skip ci]"
         
-        # 强制指定推送到当前分支（如果你的默认分支是 master，请把下面的 main 改成 master）
-        git push origin HEAD:main
+        # 推送回当前分支
+        git push
