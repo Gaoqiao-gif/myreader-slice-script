@@ -389,7 +389,7 @@ def fetch_full_content_if_needed(link, raw_content):
 
 # ==================== 【多格式文学书分段与账本管理引擎 (Python 完美对齐版)】 ====================
 class SmartBookSplitter:
-    def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000, epub_pages_per_slice=2, min_valid_len=30):
+    def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000, epub_pages_per_slice=1, min_valid_len=30):
         self.history_file = history_file
         self.split_size = split_size
         self.epub_pages_per_slice = epub_pages_per_slice
