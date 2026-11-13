@@ -387,257 +387,245 @@ def fetch_full_content_if_needed(link, raw_content):
         except: pass
     return raw_content
 
-# ==================== 【多格式文学书分段与账本管理引擎 (Python 完美对齐版)】 ====================
+# ==================== 【文学书分段逻辑 (全格式全能切书器版 - 已修复断点续读 Bug)】 ====================
 class SmartBookSplitter:
-    def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000, epub_pages_per_slice=1, min_valid_len=30):
+    def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
         self.split_size = split_size
-        self.epub_pages_per_slice = epub_pages_per_slice
-        self.min_valid_len = min_valid_len
         self.progress_map = self._load_progress()
+        self.primary_punc = '。'
+        self.other_puncts = {'！', '？', '；', '”', '’', '…', '\n', '.', '!', '?'}
 
     def _load_progress(self):
-        """修复账本读取：支持键值对稳定解析，确保不丢失进度"""
         progress = {}
         if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if ":" in line:
-                            parts = line.split(":", 1)
-                            book_name = parts[0].strip()
-                            try:
-                                progress[book_name] = int(parts[1].strip())
-                            except ValueError:
-                                pass
-                print(f"📖 [账本加载成功] 从 {self.history_file} 成功读取到 {len(progress)} 本书的阅读进度。")
-            except Exception as e:
-                print(f"⚠️ 读取账本异常: {e}")
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if ":" in line:
+                        parts = line.strip().split(":", 1)
+                        try:
+                            progress[parts[0].strip()] = int(parts[1].strip())
+                        except: pass
+        print(f"📖 [切书器] 已成功加载历史进度记录，共包含 {len(progress)} 本书的存档状态。")
         return progress
 
     def _save_progress(self):
-        """原子写入账本，确保每天的阅读指针稳固落盘"""
-        try:
-            temp_file = self.history_file + ".tmp"
-            content_to_write = ""
-            for k, v in self.progress_map.items():
-                content_to_write += f"{k} : {v}\n"
-            
-            with open(temp_file, "w", encoding="utf-8") as f:
-                f.write(content_to_write)
-                
-            os.replace(temp_file, self.history_file)
-            print(f"💾 [账本保存成功] 进度已成功落盘至 {self.history_file}")
-        except Exception as e:
-            print(f"❌ 保存账本异常: {e}")
+        content = "".join([f"{k} : {v}\n" for k, v in self.progress_map.items()])
+        with open(self.history_file, "w", encoding="utf-8") as f:
+            f.write(content)
 
-    def _extract_epub_html_pages(self, file_path):
-        """提取 EPUB 内部的所有物理 HTML/XHTML 页面列表"""
-        pages = []
+    def _read_pdf_to_text(self, pdf_path):
+        extracted_text_blocks = []
         try:
-            with zipfile.ZipFile(file_path, 'r') as z:
-                html_names = sorted([
-                    name for name in z.namelist()
-                    if name.lower().endswith(('.html', '.xhtml', '.htm'))
-                ])
-                for name in html_names:
-                    content = z.read(name).decode('utf-8', errors='ignore')
-                    pages.append((os.path.basename(name), content))
-        except Exception as e:
-            print(f"⚠️ 提取 EPUB 页面异常 [{file_path}]: {e}")
-        return pages
-
-    def _extract_text_generic(self, file_path):
-        """提取非 EPUB 格式文件的纯文本"""
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext == '.txt':
-            for enc in ['utf-8', 'gbk', 'utf-16']:
-                try:
-                    with open(file_path, 'r', encoding=enc, errors='ignore') as f:
-                        return f.read()
-                except:
+            doc = fitz.open(pdf_path)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                page_text = page.get_text("text")
+                if not page_text:
                     continue
-        else:
+                
+                lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+                if not lines:
+                    continue
+
+                fixed_paragraphs = []
+                current_para = lines[0]
+
+                for i in range(1, len(lines)):
+                    prev_line = lines[i - 1]
+                    curr_line = lines[i]
+
+                    ends_with_terminal = prev_line.endswith(('。', '！', '？', '；', '.', '!', '?', '"', '”', '’'))
+                    
+                    if ends_with_terminal:
+                        fixed_paragraphs.append(current_para)
+                        current_para = curr_line
+                    else:
+                        current_para += " " + curr_line
+
+                if current_para:
+                    fixed_paragraphs.append(current_para)
+
+                extracted_text_blocks.append("\n\n".join(fixed_paragraphs))
+
+            doc.close()
+            return "\n\n".join(extracted_text_blocks)
+        except Exception as e:
+            print(f"⚠️ 解析 PDF 异常 [{pdf_path}]: {e}")
+            return ""
+
+    def _extract_text(self, file_path):
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        if ext == '.txt':
+            for enc in ['utf-8', 'gb18030', 'utf-16']:
+                try:
+                    with open(file_path, 'r', encoding=enc, errors='strict') as f:
+                        return f.read()
+                except: continue
             try:
-                with open(file_path, 'rb') as f:
-                    content = f.read().decode('utf-8', errors='ignore')
-                    return BeautifulSoup(content, 'html.parser').get_text()
-            except:
+                with open(file_path, 'r', encoding='gb18030', errors='replace') as f:
+                    return f.read()
+            except: return ""
+
+        elif ext == '.epub':
+            try:
+                text_content = []
+                with zipfile.ZipFile(file_path, 'r') as z:
+                    for name in sorted(z.namelist()):
+                        if name.endswith(('.html', '.xhtml', '.htm')):
+                            raw_bytes = z.read(name)
+                            html_text = ""
+                            for enc in ['utf-8', 'gb18030']:
+                                try:
+                                    html_text = raw_bytes.decode(enc)
+                                    break
+                                except: continue
+                            if not html_text: html_text = raw_bytes.decode('gb18030', errors='replace')
+                            soup = BeautifulSoup(html_text, 'html.parser')
+                            for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                                t = el.get_text().strip()
+                                if t: text_content.append(t)
+                return "\n\n".join(text_content)
+            except Exception as e:
+                print(f"⚠️ 解析 EPUB 异常 [{file_path}]: {e}")
                 pass
+
+        elif ext in ['.mobi', '.azw3']:
+            temp_dir = None
+            try:
+                import mobi
+                temp_dir, filepath = mobi.extract(file_path)
+                
+                text_content = []
+                if os.path.isfile(filepath):
+                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                        soup = BeautifulSoup(f.read(), 'html.parser')
+                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                            t = el.get_text().strip()
+                            if t: text_content.append(t)
+                elif os.path.isdir(filepath):
+                    for root, dirs, files in os.walk(filepath):
+                        for file in sorted(files):
+                            if file.lower().endswith(('.html', '.xhtml', '.htm', '.ncx')):
+                                f_path = os.path.join(root, file)
+                                try:
+                                    with open(f_path, 'r', encoding='utf-8', errors='replace') as f:
+                                        soup = BeautifulSoup(f.read(), 'html.parser')
+                                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                                            t = el.get_text().strip()
+                                            if t: text_content.append(t)
+                                except: continue
+                return "\n\n".join(text_content)
+            except Exception as e:
+                print(f"⚠️ 解析 MOBI/AZW3 异常 [{file_path}]: {e}")
+                pass
+            finally:
+                if temp_dir and os.path.exists(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir)
+                    except: pass
+
+        elif ext == '.pdf':
+            return self._read_pdf_to_text(file_path)
+
         return ""
 
     def run_daily_slice(self, date_str):
-        # 1. 扫描本地文学书目录（支持 .txt, .epub 等）
+        # 【核心优化点】使用稳定排序方式保证每次查找顺序完全一致
         books = sorted([
             f for f in os.listdir('.') 
-            if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3', '.pdf', '.docx', '.fb2'))
+            if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3', '.pdf')) 
             and not f.lower().startswith('temp_')
             and "sync_history" not in f.lower() 
             and f not in {"requirements.txt", "README.md", "get_daily_article.py"}
         ])
-
-        if not books:
-            print("📚 本地没有找到任何文学书文件。")
-            return
-
-        # 2. 寻找第一本尚未读完（进度不为 -1）的书；若全部读完则自动循环从第一本重新开始
-        target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
-        if not target:
-            print("📚 所有文学书均已读完，重置所有书籍指针，从头开始循环！")
-            for b in books:
-                self.progress_map[b] = 0
-            target = books[0]
-
-        print(f"📖 正在处理文学书: 《{target}》 (当前账本指针: {self.progress_map.get(target, 0)})")
-
-        ext = os.path.splitext(target)[1].lower()
-
-        if ext == '.epub':
-            self._slice_epub(target, date_str)
-        else:
-            self._slice_non_epub(target, date_str)
-
-    def _slice_epub(self, target_book, date_str):
-        """EPUB 专有逻辑：每次切 2 个有效 HTML 页（自动跳过白板页）"""
-        html_pages = self._extract_epub_html_pages(target_book)
-        total_pages = len(html_pages)
-        if total_pages == 0:
-            print(f"⚠️ 《{target_book}》 未能提取到任何 HTML 页面，跳过。")
-            return
-
-        current_index = self.progress_map.get(target_book, 0)
-        if current_index < 0 or current_index >= total_pages:
-            self.progress_map[target_book] = -1
-            self._save_progress()
-            return self.run_daily_slice(date_str)
-
-        collected_paragraphs = []
-        page_summaries = []
-        valid_pages_count = 0
-        next_index = current_index
-
-        for i in range(current_index, total_pages):
-            page_name, page_html = html_pages[i]
-            soup = BeautifulSoup(page_html, 'html.parser')
-            page_paras = []
-            for el in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'li', 'div']):
-                t = el.get_text().strip()
-                if t:
-                    page_paras.append(t)
-
-            total_text_len = sum(len(p) for p in page_paras)
-            if total_text_len >= self.min_valid_len:
-                collected_paragraphs.extend(page_paras)
-                page_summaries.append(f"{page_name}(第{i+1}页)")
-                valid_pages_count += 1
-                next_index = i + 1
-                if valid_pages_count >= self.epub_pages_per_slice:
-                    break
-            else:
-                print(f"ℹ️ 跳过《{target_book}》白板/空白页: {page_name} (索引 {i})")
-                next_index = i + 1
-
-        if not collected_paragraphs:
-            self.progress_map[target_book] = -1
-            self._save_progress()
-            return self.run_daily_slice(date_str)
-
-        # 更新指针并落盘
-        if next_index >= total_pages:
-            self.progress_map[target_book] = -1
-            print(f"🎉 恭喜！《{target_book}》 已全部读完，标记为 -1。")
-        else:
-            self.progress_map[target_book] = next_index
-            print(f"📖 进度更新：《{target_book}》 当前切至第 {next_index}/{total_pages} 页。")
-
-        self._save_progress()
-
-        # 封装渲染
-        display_title_summary = f"《{target_book}》(EPUB切{valid_pages_count}页: {', '.join(page_summaries)})"
-        body_html = "".join([format_paragraph(p) for p in collected_paragraphs])
-        display_name = f"{date_str}_文学_EPUB连切_共{len(collected_paragraphs)}段"
-
-        raw_output = f"<h1>文学联读与切片</h1><div class='meta'>包含来源: {display_title_summary}</div><div>{body_html}<div style='color:#999;font-size:13px;margin-top:20px;'>本章完（实际有效页数: {valid_pages_count} 页）</div></div>"
         
-        lit_soup = BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser')
-        html_output = str(optimize_html_for_mobile_soup(lit_soup))
+        accumulated_html_parts = []
+        total_collected = 0
+        book_summaries = []
+        first_target_name = None
+        first_start_pos = 1
 
-        if upload_to_memory_queue(html_output, display_name):
-            print(f"✅ EPUB 文学切片拦截成功: {display_name}")
+        while total_collected < self.split_size:
+            # 过滤掉已经读完（进度值为 -1）的书本
+            target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
+            if not target:
+                print("📚 已经没有更多待切分的文学书了（所有书籍均已读完）。")
+                break
 
-    def _slice_non_epub(self, target_book, date_str):
-        """非 EPUB 专有逻辑：按字数切片（每次 6000 字，含标点智能掐断）"""
-        full_text = self._extract_text_generic(target_book).replace('\r', '')
-        total_len = len(full_text)
-        if total_len == 0:
-            print(f"⚠️ 《{target_book}》 提取文本为空，标记 -1 并跳过。")
-            self.progress_map[target_book] = -1
+            full_text = self._extract_text(target).replace('\r', '')
+            total_len = len(full_text)
+            start = self.progress_map.get(target, 0)
+
+            # 如果当前书本实际文本为空或已经读到尽头
+            if total_len == 0 or start >= total_len:
+                self.progress_map[target] = -1
+                self._save_progress()
+                continue
+
+            if not first_target_name:
+                first_target_name = target
+                first_start_pos = start + 1
+
+            print(f"📖 准备从《{target}》当前进度位置 [{start} / 总字数: {total_len}] 开始切分...")
+
+            needed = self.split_size - total_collected
+            end = min(start + needed, total_len)
+
+            if end < total_len:
+                found_punc = False
+                
+                for i in range(end, min(end + 500, total_len)):
+                    if full_text[i] == self.primary_punc:
+                        end = i + 1
+                        found_punc = True
+                        break
+                
+                if not found_punc:
+                    for i in range(end, min(end + 500, total_len)):
+                        if full_text[i] in self.other_puncts:
+                            end = i + 1
+                            found_punc = True
+                            break
+                
+                if not found_punc:
+                    for i in range(end, max(start, end - 300), -1):
+                        if full_text[i] == self.primary_punc or full_text[i] in self.other_puncts:
+                            end = i + 1
+                            break
+
+            slice_text = full_text[start:end]
+            chunk_html = "".join([split_long_paragraph(p) for p in slice_text.split('\n') if p.strip()])
+            
+            book_summaries.append(f"《{target}》(进度:{start+1}-{end})")
+            accumulated_html_parts.append(f"<div style='margin-bottom:30px;'><h2 style='color:#555;'>选自: 《{target}》</h2>{chunk_html}</div>")
+
+            collected_this_time = len(slice_text)
+            total_collected += collected_this_time
+
+            # 更新进度：如果切到了书本末尾，则设为 -1，否则记录最新的字符偏移量
+            new_progress = end if end < total_len else -1
+            self.progress_map[target] = new_progress
             self._save_progress()
+            
+            print(f"✅ 已从《{target}》切分 {collected_this_time} 字 | 本书最新断点位置: {new_progress} (当前累计总字数: {total_collected}/{self.split_size} 字)")
+
+        if not accumulated_html_parts:
+            print("📚 今日没有收集到任何文学内容。")
             return
 
-        start = self.progress_map.get(target_book, 0)
-        if start < 0 or start >= total_len:
-            self.progress_map[target_book] = -1
-            self._save_progress()
-            return self.run_daily_slice(date_str)
+        combined_title_desc = " + ".join(book_summaries)
+        pure_name = clean_filename(first_target_name.split('.')[0]) if first_target_name else "untitled"
+        display_name = f"{date_str}_文学_{pure_name}_第{first_start_pos}字"
 
-        remaining_len = total_len - start
-        if remaining_len <= self.split_size:
-            actual_end = total_len
-            final_slice_text = full_text[start:actual_end]
-            self.progress_map[target_book] = -1
-            print(f"🎉 提示：《{target_book}》 剩余字数不足 {self.split_size} 字（剩余 {remaining_len} 字），今天全部切完！")
-        else:
-            buffer_extra = 500
-            max_target_len = self.split_size + buffer_extra
-            current_end = min(start + max_target_len, total_len)
-            accumulated_text = full_text[start:current_end]
-
-            cutoff_search_pool = accumulated_text[self.split_size:]
-            actual_cut_len = min(self.split_size, len(accumulated_text))
-
-            if cutoff_search_pool:
-                sub_pool = cutoff_search_pool[:buffer_extra]
-                found_idx = -1
-                for idx, char in enumerate(sub_pool):
-                    if char == '。':
-                        found_idx = idx + 1
-                        break
-                if found_idx == -1:
-                    fallback_puncts = {'？', '！', '；', '\n', '…', '?', '!', ';'}
-                    for idx, char in enumerate(sub_pool):
-                        if char in fallback_puncts:
-                            found_idx = idx + 1
-                            break
-                if found_idx != -1:
-                    actual_cut_len = self.split_size + found_idx
-
-            final_slice_text = accumulated_text[:actual_cut_len]
-            actual_end = start + actual_cut_len
-
-            if actual_end >= total_len:
-                self.progress_map[target_book] = -1
-                print(f"🎉 恭喜！今天刚好把 《{target_book}》 切完。")
-            else:
-                self.progress_map[target_book] = actual_end
-                print(f"📖 进度更新：《{target_book}》 当前切至第 {actual_end}/{total_len} 字。")
-
-        self._save_progress()
-
-        slice_meta_parts = [f"《{target_book}》({start+1}~{actual_end}字)"]
-        body_html = "".join([format_paragraph(p) for p in final_slice_text.split('\n') if p.strip()])
-        display_title_summary = " + ".join(slice_meta_parts)
-        display_name = f"{date_str}_文学_独立切分_共{len(final_slice_text)}字"
-
-        raw_output = f"<h1>文学联读与切片</h1><div class='meta'>包含来源: {display_title_summary}</div><div>{body_html}<div style='color:#999;font-size:13px;margin-top:20px;'>本章完（实际切出总字数: {len(final_slice_text)} 字）</div></div>"
-
-        lit_soup = BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser')
-        html_output = str(optimize_html_for_mobile_soup(lit_soup))
-
-        if upload_to_memory_queue(html_output, display_name):
-            print(f"✅ 文学书切片拦截成功: {display_name} (总字数: {len(final_slice_text)})")
-            
+        raw_output = f"<h1>《{first_target_name}》 (等合集)</h1>" + "".join(accumulated_html_parts) + f"<div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>包含书目: {combined_title_desc} | 今日总字数: {total_collected}</div>"
+        
+        optimized_lit_soup = optimize_html_for_mobile_soup(BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser'))
+        
+        if upload_to_nutstore(str(optimized_lit_soup), display_name):
+            print(f"🎉 高桥文学书多书跨书凑满切片成功: {display_name} (总字数: {total_collected})")
+          
 # ==================== 【资讯抓取模块】 ====================
 def get_cdt_all(h_set, date_str):
     print("🌐 正在扫描 CDT 全文...")
