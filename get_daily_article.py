@@ -387,7 +387,7 @@ def fetch_full_content_if_needed(link, raw_content):
         except: pass
     return raw_content
 
-# ==================== 【文学书分段逻辑 (全格式全能切书器版 - 已修复断点续读 Bug)】 ====================
+# ==================== 【文学书分段逻辑 (全格式全能切书器版 - 已修复不足6000字全盘切出并置-1)】 ====================
 class SmartBookSplitter:
     def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
@@ -532,7 +532,7 @@ class SmartBookSplitter:
         return ""
 
     def run_daily_slice(self, date_str):
-        # 【核心优化点】使用稳定排序方式保证每次查找顺序完全一致
+        # 使用稳定排序方式保证每次查找顺序完全一致
         books = sorted([
             f for f in os.listdir('.') 
             if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3', '.pdf')) 
@@ -568,32 +568,38 @@ class SmartBookSplitter:
                 first_target_name = target
                 first_start_pos = start + 1
 
-            print(f"📖 准备从《{target}》当前进度位置 [{start} / 总字数: {total_len}] 开始切分...")
-
+            # 计算当前书本剩余未读的字数
+            remaining_in_book = total_len - start
             needed = self.split_size - total_collected
-            end = min(start + needed, total_len)
 
-            if end < total_len:
-                found_punc = False
-                
-                for i in range(end, min(end + 500, total_len)):
-                    if full_text[i] == self.primary_punc:
-                        end = i + 1
-                        found_punc = True
-                        break
-                
-                if not found_punc:
+            # 【核心修改点】：如果当前书剩余字数不足以填满剩下的配额，说明这是这本书的最后尾声了
+            if remaining_in_book <= needed:
+                end = total_len
+                print(f"📌 《{target}》剩余字数不足（共 {remaining_in_book} 字），执行全盘切出，并在结束时写上 -1。")
+            else:
+                end = start + needed
+                # 正常超过 6000 字时的标点智能掐断逻辑
+                if end < total_len:
+                    found_punc = False
+                    
                     for i in range(end, min(end + 500, total_len)):
-                        if full_text[i] in self.other_puncts:
+                        if full_text[i] == self.primary_punc:
                             end = i + 1
                             found_punc = True
                             break
-                
-                if not found_punc:
-                    for i in range(end, max(start, end - 300), -1):
-                        if full_text[i] == self.primary_punc or full_text[i] in self.other_puncts:
-                            end = i + 1
-                            break
+                    
+                    if not found_punc:
+                        for i in range(end, min(end + 500, total_len)):
+                            if full_text[i] in self.other_puncts:
+                                end = i + 1
+                                found_punc = True
+                                break
+                    
+                    if not found_punc:
+                        for i in range(end, max(start, end - 300), -1):
+                            if full_text[i] == self.primary_punc or full_text[i] in self.other_puncts:
+                                end = i + 1
+                                break
 
             slice_text = full_text[start:end]
             chunk_html = "".join([split_long_paragraph(p) for p in slice_text.split('\n') if p.strip()])
@@ -604,12 +610,20 @@ class SmartBookSplitter:
             collected_this_time = len(slice_text)
             total_collected += collected_this_time
 
-            # 更新进度：如果切到了书本末尾，则设为 -1，否则记录最新的字符偏移量
-            new_progress = end if end < total_len else -1
+            # 【核心修改点】：如果切到了书本末尾（或因余量不足切到底），则设为 -1
+            if end >= total_len or remaining_in_book <= needed:
+                new_progress = -1
+            else:
+                new_progress = end
+
             self.progress_map[target] = new_progress
             self._save_progress()
             
             print(f"✅ 已从《{target}》切分 {collected_this_time} 字 | 本书最新断点位置: {new_progress} (当前累计总字数: {total_collected}/{self.split_size} 字)")
+
+            # 如果是因为把当前书切到底而结束的，直接跳出循环，不再去勉强拼凑下一本
+            if new_progress == -1:
+                break
 
         if not accumulated_html_parts:
             print("📚 今日没有收集到任何文学内容。")
