@@ -8,6 +8,7 @@ on:
 jobs:
   run-script:
     runs-on: ubuntu-latest
+    timeout-minutes: 25 # ⏱️ 整个任务最长运行25分钟，超时自动停止防卡死
     
     # 💡 赋予 Actions 写入仓库的权限，防止账本同步失败
     permissions:
@@ -28,12 +29,13 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run Python script
+      timeout-minutes: 20 # ⏱️ 单独限制脚本最多跑20分钟，留5分钟给后面的同步步骤
       env:
         # 🚀 核心连接：把网页上的 DAV 密钥拿出来，完美交接给 Python 代码
         DAV_ACCOUNT: ${{ secrets.DAV_ACCOUNT }}
         DAV_TOKEN: ${{ secrets.DAV_TOKEN }}
       run: |
-        python get_daily_article.py
+        python -u get_daily_article.py
 
     - name: 自动同步本地对账本回 GitHub 仓库
       run: |
@@ -51,3 +53,4 @@ jobs:
         
         # 推送回当前分支
         git push
+
