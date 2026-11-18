@@ -440,7 +440,138 @@ def fetch_full_content_if_needed(link, raw_content):
         except: pass
     return raw_content
 
-def run_daily_slice(self, date_str):
+# ==================== 【文学书分段逻辑 (单书独立切片、绝不跨书拼凑)】 ====================
+class SmartBookSplitter:
+    def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
+        self.history_file = history_file
+        self.split_size = split_size
+        self.progress_map = self._load_progress()
+        self.primary_punc = '。'
+        self.other_puncts = {'！', '？', '；', '”', '’', '…', '\n', '.', '!', '?'}
+
+    def _load_progress(self):
+        progress = {}
+        if os.path.exists(self.history_file):
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if ":" in line:
+                        parts = line.strip().split(":", 1)
+                        try:
+                            progress[parts[0].strip()] = int(parts[1].strip())
+                        except: pass
+        print(f"📖 [切书器] 已成功加载历史进度记录，共包含 {len(progress)} 本书的存档状态。", flush=True)
+        return progress
+
+    def _save_progress(self):
+        content = "".join([f"{k} : {v}\n" for k, v in self.progress_map.items()])
+        with open(self.history_file, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def _read_pdf_to_text(self, pdf_path):
+        extracted_text_blocks = []
+        try:
+            doc = fitz.open(pdf_path)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                page_text = page.get_text("text")
+                if not page_text: continue
+                
+                lines = [line.strip() for line in page_text.splitlines() if line.strip()]
+                if not lines: continue
+
+                fixed_paragraphs = []
+                current_para = lines[0]
+
+                for i in range(1, len(lines)):
+                    prev_line = lines[i - 1]
+                    curr_line = lines[i]
+                    ends_with_terminal = prev_line.endswith(('。', '！', '？', '；', '.', '!', '?', '"', '”', '’'))
+                    if ends_with_terminal:
+                        fixed_paragraphs.append(current_para)
+                        current_para = curr_line
+                    else:
+                        current_para += " " + curr_line
+
+                if current_para: fixed_paragraphs.append(current_para)
+                extracted_text_blocks.append("\n\n".join(fixed_paragraphs))
+
+            doc.close()
+            return "\n\n".join(extracted_text_blocks)
+        except Exception as e:
+            RUN_METRICS.log_error("PDF解析", f"{pdf_path}: {e}")
+            return ""
+
+    def _extract_text(self, file_path):
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == '.txt':
+            for enc in ['utf-8', 'gb18030', 'utf-16']:
+                try:
+                    with open(file_path, 'r', encoding=enc, errors='strict') as f:
+                        return f.read()
+                except: continue
+            try:
+                with open(file_path, 'r', encoding='gb18030', errors='replace') as f:
+                    return f.read()
+            except: return ""
+        elif ext == '.epub':
+            try:
+                text_content = []
+                with zipfile.ZipFile(file_path, 'r') as z:
+                    for name in sorted(z.namelist()):
+                        if name.endswith(('.html', '.xhtml', '.htm')):
+                            raw_bytes = z.read(name)
+                            html_text = ""
+                            for enc in ['utf-8', 'gb18030']:
+                                try:
+                                    html_text = raw_bytes.decode(enc)
+                                    break
+                                except: continue
+                            if not html_text: html_text = raw_bytes.decode('gb18030', errors='replace')
+                            soup = BeautifulSoup(html_text, 'html.parser')
+                            for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                                t = el.get_text().strip()
+                                if t: text_content.append(t)
+                return "\n\n".join(text_content)
+            except Exception as e:
+                RUN_METRICS.log_error("EPUB解析", f"{file_path}: {e}")
+                pass
+        elif ext in ['.mobi', '.azw3']:
+            temp_dir = None
+            try:
+                import mobi
+                temp_dir, filepath = mobi.extract(file_path)
+                text_content = []
+                if os.path.isfile(filepath):
+                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                        soup = BeautifulSoup(f.read(), 'html.parser')
+                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                            t = el.get_text().strip()
+                            if t: text_content.append(t)
+                elif os.path.isdir(filepath):
+                    for root, dirs, files in os.walk(filepath):
+                        for file in sorted(files):
+                            if file.lower().endswith(('.html', '.xhtml', '.htm', '.ncx')):
+                                f_path = os.path.join(root, file)
+                                try:
+                                    with open(f_path, 'r', encoding='utf-8', errors='replace') as f:
+                                        soup = BeautifulSoup(f.read(), 'html.parser')
+                                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
+                                            t = el.get_text().strip()
+                                            if t: text_content.append(t)
+                                except: continue
+                return "\n\n".join(text_content)
+            except Exception as e:
+                RUN_METRICS.log_error("MOBI解析", f"{file_path}: {e}")
+                pass
+            finally:
+                if temp_dir and os.path.exists(temp_dir):
+                    try: shutil.rmtree(temp_dir)
+                    except: pass
+        elif ext == '.pdf':
+            return self._read_pdf_to_text(file_path)
+        return ""
+
+    def run_daily_slice(self, date_str):
         books = sorted([
             f for f in os.listdir('.') 
             if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3', '.pdf')) 
@@ -450,10 +581,10 @@ def run_daily_slice(self, date_str):
         ])
         
         if not books:
-            print("📚 已经没有找到任何文学书籍文件。", flush=True)
+            print("📚 本地未找到任何文学书籍文件。", flush=True)
             return
 
-        # 严格只找当前需要读的唯一一本书
+        # 严格只寻找当前需要读的唯一一本书
         target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
         if not target:
             print("📚 本地所有文学书均已阅读完毕，重置进度循环阅读。", flush=True)
@@ -471,18 +602,17 @@ def run_daily_slice(self, date_str):
             self.progress_map[target] = -1
             self._save_progress()
             print(f"📚 《{target}》 已读完或内容为空，自动跳过。", flush=True)
-            return self.run_daily_slice(date_str) # 递归处理下一本
+            return self.run_daily_slice(date_str) # 递归找下一本
 
         remaining_in_book = total_len - start
         target_len = self.split_size # 6000字
 
-        # 【核心逻辑】：如果这本书剩下的字数本身就不够 6000 字，有多少切多少，切完直接标 -1！绝对不跨书拼凑
+        # 【核心规则】：如果剩余字数本身就不够 6000 字，全切完，并直接把进度标为 -1！绝对不跨书拼凑
         if remaining_in_book <= target_len:
             end = total_len
             self.progress_map[target] = -1
             print(f"🎉 提示：《{target}》 剩余字数不足 {target_len} 字（剩余 {remaining_in_book} 字），今天全部切完并标记为 -1！", flush=True)
         else:
-            # 正常字数充足的情况，按设定的 6000 字切片并寻找标点断句
             end = start + target_len
             found_punc = False
             for i in range(end, min(end + 500, total_len)):
