@@ -43,8 +43,14 @@ class RunMetrics:
             "cdt_count": 0,
             "wiki_count": 0,
             "custom_feeds": 0,
-            "errors": []
+            "errors": [],
+            "module_logs": []
         }
+
+    def record(self, module, ok, detail=""):
+        status = "成功" if ok else "提示/未执行"
+        entry = f"[{module}] {status}" + (f": {detail}" if detail else "")
+        self.stats["module_logs"].append(entry)
 
     def log_error(self, source, err_msg):
         self.stats["errors"].append(f"[{source}] {str(err_msg)}")
@@ -266,47 +272,44 @@ def upload_to_nutstore(file_content, target_filename):
     print(f"📥 [B项目内存拦截成功] 已成功归档至待打包队列: {target_filename}", flush=True)
     return True
 
-# ==================== 【运行状态报告生成器 (置顶首章)】 ====================
-def generate_run_report_html(date_str):
+# ==================== 【运行状态报告纯文本输出器 (末尾控制台打印)】 ====================
+def print_run_report_plain(date_str, epub_success):
     duration = round(time.time() - RUN_METRICS.start_time, 2)
     stats = RUN_METRICS.stats
-    
-    error_html = ""
-    if stats["errors"]:
-        items_str = "".join([f"<li>{html.escape(err)}</li>" for err in stats['errors']])
-        error_html = f"<div style='margin-top:20px;color:#c0392b;'><h3>⚠️ 运行异常记录：</h3><ul>{items_str}</ul></div>"
-    else:
-        error_html = "<p style='color:#27ae60;margin-top:20px;'>✨ 本次运行全程顺利，无异常错误上报。</p>"
+    now_bj = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
+    sync_status = "已成功上传至坚果云" if epub_success else ("未打包或上传失败" if GLOBAL_EPUB_ARTICLES else "无新内容跳过上传")
 
-    report_content = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"></head>
-<body>
-    <h1>📊 今日自动化抓取运行状态报告</h1>
-    <div class="meta">日期: {date_str} | 耗时: {duration} 秒</div>
-    <article class="pdf-content-flow">
-        <div style="background:#f8f9fa;padding:15px;border-radius:8px;border-left:4px solid #3498db;margin-bottom:20px;">
-            <p><strong>🕒 任务执行时间：</strong> {get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <p><strong>📚 文学切书统计：</strong> 共处理 {stats['lit_books']} 本书，有效切片字数：{stats['lit_chars']} 字</p>
-            <p><strong>🌐 资讯抓取统计：</strong> CDT 文章 {stats['cdt_count']} 篇 | Wiki特色 1 篇 | 自定义源文章 {stats['custom_feeds']} 篇</p>
-            <p><strong>📦 待打包总文章数：</strong> {len(GLOBAL_EPUB_ARTICLES)} 篇</p>
-        </div>
-        {error_html}
-    </article>
-</body>
-</html>"""
-    
-    optimized_report = optimize_html_for_mobile_soup(BeautifulSoup(report_content, 'html.parser'))
-    
-    # 强行插入队列首位作为电子书第一章
-    GLOBAL_EPUB_ARTICLES.insert(0, {
-        "is_lit": False,
-        "title": f"【运行状态报告】{date_str}",
-        "source": "系统运维",
-        "content": str(optimized_report),
-        "filename": f"{date_str}_系统运维_运行状态报告"
-    })
-    print(f"📊 [运行状态报告] 已成功生成并强行置顶插入队列首位。", flush=True)
+    lines = [
+        "",
+        "=" * 56,
+        f"📊 今日自动化抓取运行状态报告 ({date_str})",
+        "=" * 56,
+        f"🕒 执行时间: {now_bj} (北京时间)",
+        f"⏱️ 总计耗时: {duration} 秒",
+        f"📦 归档篇数: {len(GLOBAL_EPUB_ARTICLES)} 篇",
+        f"☁️ 云端同步: {sync_status}",
+        "-" * 56,
+        "📈 模块统计:",
+        f"  • 文学切书: {stats['lit_books']} 本 | 有效切片字数: {stats['lit_chars']} 字",
+        f"  • 资讯抓取: CDT {stats['cdt_count']} 篇 | Wiki特色 {stats['wiki_count']} 篇 | 自定义源 {stats['custom_feeds']} 篇",
+    ]
+
+    if stats.get("module_logs"):
+        lines.append("-" * 56)
+        lines.append("📝 运行摘要:")
+        for item in stats["module_logs"]:
+            lines.append(f"  • {item}")
+
+    lines.append("-" * 56)
+    if stats["errors"]:
+        lines.append(f"⚠️ 运行异常记录 ({len(stats['errors'])} 条):")
+        for err in stats["errors"]:
+            lines.append(f"  • {err}")
+    else:
+        lines.append("✨ 本次运行全程顺利，无异常错误上报。")
+
+    lines.append("=" * 56)
+    print("\n".join(lines), flush=True)
 
 def build_and_upload_daily_epub(date_str):
     global GLOBAL_EPUB_ARTICLES
@@ -330,7 +333,6 @@ def build_and_upload_daily_epub(date_str):
     book.set_language('zh')
     book.add_author('Python Automation Bot Gaoqiao')
 
-    # 保证报告（无is_lit或特定排布）在最前，其余按原本排序
     epub_chapters = []
     for idx, art in enumerate(GLOBAL_EPUB_ARTICLES, 1):
         chapter = epub.EpubHtml(
@@ -827,6 +829,8 @@ class SmartBookSplitter:
 
         if upload_to_nutstore(html_output, display_name):
             print(f"✅ 文学书切片拦截成功: {display_name} (总字数: {collected_char_count})", flush=True)
+            RUN_METRICS.stats["lit_books"] += 1
+            RUN_METRICS.stats["lit_chars"] += collected_char_count
             RUN_METRICS.record("book_slice", True, f"成功切片书籍《{target}》共 {collected_char_count} 字")
 
 # ==================== 【资讯抓取模块 (60秒超时管控)】 ====================
@@ -951,15 +955,15 @@ def main():
     get_gutenberg_all(h_set, today) # 已注销空跑
     get_user_custom_feeds(h_set, today)
     
-    # 3. 生成运行状态报告并强行置顶插入队列首位
-    generate_run_report_html(today)
-    
-    # 4. 编译并推送到坚果云
+    # 3. 编译并推送到坚果云（不含运行状态报告）
     epub_success = build_and_upload_daily_epub(today)
     if epub_success:
         print("🏁 所有任务执行完毕，《高桥文学》电子书已成功同步至坚果云，本地对账本已更新。", flush=True)
     else:
         print("❌ 警告: 《高桥文学》电子书上传坚果云失败！", flush=True)
+
+    # 4. 在脚本最末尾以纯文本打印运行状态报告到 GitHub Actions 日志
+    print_run_report_plain(today, epub_success)
 
 if __name__ == "__main__": 
     main()
