@@ -461,22 +461,29 @@ class SmartBookSplitter:
                         try:
                             if "{" in val_str:
                                 import json
-                                progress[key] = json.loads(val_str)
+                                parsed = json.loads(val_str)
+                                if isinstance(parsed, dict):
+                                    offset_val = int(parsed.get("char_offset", 0))
+                                    progress[key] = max(0, offset_val)
+                                else:
+                                    progress[key] = int(parsed)
                             else:
                                 val_int = int(val_str)
-                                if val_int == -1:
-                                    progress[key] = -1
-                                else:
-                                    progress[key] = {"chap_idx": 0, "node_idx": 0, "char_offset": val_int}
-                        except: 
-                            progress[key] = {"chap_idx": 0, "node_idx": 0, "char_offset": 0}
+                                progress[key] = -1 if val_int == -1 else max(0, val_int)
+                        except Exception:
+                            progress[key] = 0
         return progress
 
     def _save_progress(self):
-        import json
-        content = "".join([f"{k} : {json.dumps(v) if isinstance(v, dict) else v}\n" for k, v in self.progress_map.items()])
+        lines = []
+        for k, v in self.progress_map.items():
+            if isinstance(v, dict):
+                val_to_write = max(0, int(v.get("char_offset", 0)))
+            else:
+                val_to_write = int(v)
+            lines.append(f"{k} : {val_to_write}\n")
         with open(self.history_file, "w", encoding="utf-8") as f:
-            f.write(content)
+            f.writelines(lines)
 
     def _parse_book_to_dom_structure(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
@@ -658,26 +665,31 @@ class SmartBookSplitter:
         }
 
     def run_daily_slice(self, date_str):
+        global RUN_METRICS
+        import copy
+
         books = sorted([
-            f for f in os.listdir('.') 
-            if f.lower().endswith(('.epub', '.docx', '.txt', '.html', '.md')) 
+            f for f in os.listdir('.')
+            if f.lower().endswith(('.epub', '.docx', '.txt', '.html', '.md'))
             and not f.lower().startswith('temp_')
-            and "sync_history" not in f.lower() 
+            and "sync_history" not in f.lower()
             and f not in {"requirements.txt", "README.md", "get_daily_article.py"}
         ])
 
         if not books:
             print("📭 本地未发现受支持的文学书籍文件。", flush=True)
-            RUN_METRICS.record("book_slice", False, "本地未发现文学书籍文件")
+            RUN_METRICS["lit_slice_summary"] = "本地未发现文学书籍文件"
+            RUN_METRICS["errors"].append("本地未发现文学书籍文件")
             return
 
         print(f"📚 扫描到书架书籍共 {len(books)} 本", flush=True)
-        target_len = self.split_size
+        min_target = self.split_size
+        max_hard_limit = 7000
 
         target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
         if not target:
             print("🎉 本地所有文学书均已阅读完毕！", flush=True)
-            RUN_METRICS.record("book_slice", True, "所有文学书均已阅读完毕")
+            RUN_METRICS["lit_slice_summary"] = "所有文学书均已阅读完毕"
             return
 
         print(f"📖 锁定当前阅读书籍: 《{target}》", flush=True)
@@ -688,111 +700,112 @@ class SmartBookSplitter:
         if not chapters:
             self.progress_map[target] = -1
             self._save_progress()
-            RUN_METRICS.record("book_slice", False, f"书籍章节为空: {target}")
+            RUN_METRICS["lit_slice_summary"] = f"书籍章节为空: {target}"
+            RUN_METRICS["errors"].append(f"书籍章节为空: {target}")
             return
 
-        book_prog = self.progress_map.get(target, 0)
-        if isinstance(book_prog, dict):
-            curr_chap_idx = book_prog.get("chap_idx", 0)
-            start_node_idx = book_prog.get("node_idx", 0)
-            start_offset = book_prog.get("char_offset", 0)
+        raw_prog = self.progress_map.get(target, 0)
+        if isinstance(raw_prog, dict):
+            saved_offset = max(0, int(raw_prog.get("char_offset", 0)))
         else:
-            curr_chap_idx = 0
-            start_node_idx = 0
-            start_offset = 0
+            saved_offset = max(0, int(raw_prog))
+
+        # 将全书各章节的块级 DOM 节点扁平化
+        flat_block_nodes = []
+        block_tags = ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote']
+        for chapter in chapters:
+            chap_dom = chapter["dom"]
+            blocks = chap_dom.find_all(block_tags, recursive=False)
+            if not blocks:
+                raw_blocks = chap_dom.find_all(block_tags, recursive=True)
+                if raw_blocks:
+                    # 过滤掉内部仍包含目标块级标签的父容器，防止重复计数字符
+                    raw_set = set(id(el) for el in raw_blocks)
+                    leaf_blocks = [
+                        el for el in raw_blocks
+                        if not any(id(desc) in raw_set for desc in el.find_all(block_tags, recursive=True))
+                    ]
+                    blocks = leaf_blocks if leaf_blocks else raw_blocks
+            if not blocks:
+                blocks = [chap_dom]
+            flat_block_nodes.extend(blocks)
 
         accumulated_dom_nodes = []
         collected_char_count = 0
-        book_finished = False
+        cursor_pos = 0
+        reached_end_of_book = True
+        sentence_enders = ['。', '！', '？', '；', '”', '’', '.', '!', '?', ';', '"', "'", '\n']
 
-        while curr_chap_idx < len(chapters):
-            chapter = chapters[curr_chap_idx]
-            chap_dom = chapter["dom"]
-            
-            block_elements = chap_dom.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote'], recursive=False)
-            if not block_elements:
-                block_elements = chap_dom.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote'], recursive=True)
-            if not block_elements:
-                block_elements = [chap_dom]
+        for node in flat_block_nodes:
+            node_text = node.get_text()
+            node_len = len(node_text)
+            if node_len == 0:
+                continue
 
-            n_idx = start_node_idx if curr_chap_idx == start_node_idx else 0
-            
-            while n_idx < len(block_elements):
-                node = block_elements[n_idx]
-                node_text = node.get_text()
-                node_offset = start_offset if (curr_chap_idx == curr_chap_idx and n_idx == n_idx) else 0
-                
-                text_chunk = node_text[node_offset:]
-                chunk_len = len(text_chunk)
-                
-                if chunk_len == 0:
-                    n_idx += 1
-                    start_offset = 0
-                    continue
+            node_start = cursor_pos
+            node_end = cursor_pos + node_len
+            cursor_pos = node_end
 
-                if collected_char_count < target_len:
-                    accumulated_dom_nodes.append((all_styles, node))
-                    collected_char_count += chunk_len
-                    n_idx += 1
-                    start_offset = 0
-                elif target_len <= collected_char_count < target_len + 1000:
-                    accumulated_dom_nodes.append((all_styles, node))
-                    collected_char_count += chunk_len
-                    n_idx += 1
-                    start_offset = 0
-                    book_finished = True
-                    break
-                else:
-                    remaining_needed = (target_len + 500) - collected_char_count
-                    sub_text = text_chunk[:max(100, remaining_needed)]
-                    
-                    cut_pos = -1
-                    for punct in ['。', '.', '！', '？', '；']:
-                        pos = sub_text.rfind(punct)
-                        if pos > 20:
-                            cut_pos = pos + 1
-                            break
-                    
-                    if cut_pos == -1 or cut_pos == 0:
-                        cut_pos = min(len(text_chunk), max(1, remaining_needed))
+            # 跳过已读偏移量之前的内容
+            if node_end <= saved_offset:
+                continue
 
-                    import copy
+            skip_in_node = max(0, saved_offset - node_start)
+            avail_text = node_text[skip_in_node:]
+            avail_len = len(avail_text)
+            if avail_len == 0:
+                continue
+
+            projected_total = collected_char_count + avail_len
+
+            if projected_total <= max_hard_limit:
+                # 加上完整段落后仍在 7000 硬上限内（含 6000~7000 区间），直接完整收下
+                if skip_in_node > 0:
                     node_copy = copy.copy(node)
-                    node_copy.string = text_chunk[:cut_pos]
-
+                    node_copy.string = avail_text
                     accumulated_dom_nodes.append((all_styles, node_copy))
-                    collected_char_count += cut_pos
+                else:
+                    accumulated_dom_nodes.append((all_styles, node))
+                collected_char_count += avail_len
 
-                    start_offset = node_offset + cut_pos
-                    book_finished = True
-                    break
-
-            if n_idx >= len(block_elements):
-                curr_chap_idx += 1
-                start_node_idx = 0
-                start_offset = 0
-                if curr_chap_idx >= len(chapters):
-                    self.progress_map[target] = -1
-                    print(f"🎉 书籍《{target}》已全部读完，标记为 -1。", flush=True)
+                if collected_char_count >= min_target:
+                    # 已落入 [6000, 7000] 区间且保持完整段落，结束今日切片
+                    reached_end_of_book = False
                     break
             else:
-                self.progress_map[target] = {
-                    "chap_idx": curr_chap_idx,
-                    "node_idx": n_idx,
-                    "char_offset": start_offset
-                }
+                # 加上当前完整段落会超过 7000 硬上限，必须在 7000 上限内向前找最近句末标点劈开
+                allowed_extra = max_hard_limit - collected_char_count
+                if allowed_extra > 0:
+                    candidate = avail_text[:allowed_extra]
+                    cut_len = -1
+                    for punct in sentence_enders:
+                        pos = candidate.rfind(punct)
+                        if pos >= 0 and (pos + 1) > cut_len:
+                            cut_len = pos + 1
+                    if cut_len <= 0:
+                        cut_len = allowed_extra
 
-            if book_finished or collected_char_count >= target_len:
+                    cut_text = avail_text[:cut_len]
+                    node_copy = copy.copy(node)
+                    node_copy.string = cut_text
+                    accumulated_dom_nodes.append((all_styles, node_copy))
+                    collected_char_count += len(cut_text)
+
+                reached_end_of_book = False
                 break
 
-        if curr_chap_idx >= len(chapters):
+        if reached_end_of_book:
             self.progress_map[target] = -1
+            print(f"🎉 书籍《{target}》已全部读完，账本标记为 -1。", flush=True)
+        else:
+            self.progress_map[target] = saved_offset + collected_char_count
 
         self._save_progress()
 
-        if not accumulated_dom_nodes:
+        if not accumulated_dom_nodes or collected_char_count == 0:
             print("📭 今日未收集到任何文学书切片内容。", flush=True)
-            RUN_METRICS.record("book_slice", False, "未收集到文学书切片内容")
+            RUN_METRICS["lit_slice_summary"] = "未收集到文学书切片内容"
+            RUN_METRICS["errors"].append("未收集到文学书切片内容")
             return
 
         print(f"✨ 单书切片完成: 《{target}》，本次切出字数: {collected_char_count} 字，准备封装上传...", flush=True)
@@ -829,10 +842,7 @@ class SmartBookSplitter:
 
         if upload_to_nutstore(html_output, display_name):
             print(f"✅ 文学书切片拦截成功: {display_name} (总字数: {collected_char_count})", flush=True)
-            RUN_METRICS.stats["lit_books"] += 1
-            RUN_METRICS.stats["lit_chars"] += collected_char_count
-            RUN_METRICS.record("book_slice", True, f"成功切片书籍《{target}》共 {collected_char_count} 字")
-
+            RUN_METRICS["lit_slice_summary"] = f"成功切片书籍《{target}》共 {collected_char_count} 字"
 # ==================== 【资讯抓取模块 (60秒超时管控)】 ====================
 def get_cdt_all(h_set, date_str):
     print("🌐 正在扫描 CDT 全文...", flush=True)
