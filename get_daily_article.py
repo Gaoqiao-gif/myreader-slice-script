@@ -843,6 +843,7 @@ class SmartBookSplitter:
         if upload_to_nutstore(html_output, display_name):
             print(f"✅ 文学书切片拦截成功: {display_name} (总字数: {collected_char_count})", flush=True)
             RUN_METRICS["lit_slice_summary"] = f"成功切片书籍《{target}》共 {collected_char_count} 字"
+            
 # ==================== 【资讯抓取模块 (60秒超时管控)】 ====================
 def get_cdt_all(h_set, date_str):
     print("🌐 正在扫描 CDT 全文...", flush=True)
