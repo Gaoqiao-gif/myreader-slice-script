@@ -440,14 +440,12 @@ def fetch_full_content_if_needed(link, raw_content):
         except: pass
     return raw_content
 
-# ==================== 【文学书分段逻辑 (单书独立切片、绝不跨书拼凑)】 ====================
+# ==================== 【单书独立切片、绝不跨书拼凑的 SmartBookSplitter】 ====================
 class SmartBookSplitter:
     def __init__(self, history_file=LIT_HISTORY_FILE, split_size=6000):
         self.history_file = history_file
         self.split_size = split_size
         self.progress_map = self._load_progress()
-        self.primary_punc = '。'
-        self.other_puncts = {'！', '？', '；', '”', '’', '…', '\n', '.', '!', '?'}
 
     def _load_progress(self):
         progress = {}
@@ -456,207 +454,380 @@ class SmartBookSplitter:
                 for line in f:
                     if ":" in line:
                         parts = line.strip().split(":", 1)
+                        key = parts[0].strip()
+                        val_str = parts[1].strip()
                         try:
-                            progress[parts[0].strip()] = int(parts[1].strip())
-                        except: pass
-        print(f"📖 [切书器] 已成功加载历史进度记录，共包含 {len(progress)} 本书的存档状态。", flush=True)
+                            if "{" in val_str:
+                                import json
+                                progress[key] = json.loads(val_str)
+                            else:
+                                val_int = int(val_str)
+                                if val_int == -1:
+                                    progress[key] = -1
+                                else:
+                                    progress[key] = {"chap_idx": 0, "node_idx": 0, "char_offset": val_int}
+                        except: 
+                            progress[key] = {"chap_idx": 0, "node_idx": 0, "char_offset": 0}
         return progress
 
     def _save_progress(self):
-        content = "".join([f"{k} : {v}\n" for k, v in self.progress_map.items()])
+        import json
+        content = "".join([f"{k} : {json.dumps(v) if isinstance(v, dict) else v}\n" for k, v in self.progress_map.items()])
         with open(self.history_file, "w", encoding="utf-8") as f:
             f.write(content)
 
-    def _read_pdf_to_text(self, pdf_path):
-        extracted_text_blocks = []
-        try:
-            doc = fitz.open(pdf_path)
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                page_text = page.get_text("text")
-                if not page_text: continue
-                
-                lines = [line.strip() for line in page_text.splitlines() if line.strip()]
-                if not lines: continue
-
-                fixed_paragraphs = []
-                current_para = lines[0]
-
-                for i in range(1, len(lines)):
-                    prev_line = lines[i - 1]
-                    curr_line = lines[i]
-                    ends_with_terminal = prev_line.endswith(('。', '！', '？', '；', '.', '!', '?', '"', '”', '’'))
-                    if ends_with_terminal:
-                        fixed_paragraphs.append(current_para)
-                        current_para = curr_line
-                    else:
-                        current_para += " " + curr_line
-
-                if current_para: fixed_paragraphs.append(current_para)
-                extracted_text_blocks.append("\n\n".join(fixed_paragraphs))
-
-            doc.close()
-            return "\n\n".join(extracted_text_blocks)
-        except Exception as e:
-            RUN_METRICS.log_error("PDF解析", f"{pdf_path}: {e}")
-            return ""
-
-    def _extract_text(self, file_path):
+    def _parse_book_to_dom_structure(self, file_path):
         ext = os.path.splitext(file_path)[1].lower()
-        if ext == '.txt':
-            for enc in ['utf-8', 'gb18030', 'utf-16']:
-                try:
-                    with open(file_path, 'r', encoding=enc, errors='strict') as f:
-                        return f.read()
-                except: continue
+        styles = []
+        chapters = []
+        print(f"🔍 [解析器] 开始解析文件: '{file_path}' (类型: {ext})", flush=True)
+
+        if ext == '.epub':
             try:
-                with open(file_path, 'r', encoding='gb18030', errors='replace') as f:
-                    return f.read()
-            except: return ""
-        elif ext == '.epub':
-            try:
-                text_content = []
+                import base64
                 with zipfile.ZipFile(file_path, 'r') as z:
-                    for name in sorted(z.namelist()):
-                        if name.endswith(('.html', '.xhtml', '.htm')):
-                            raw_bytes = z.read(name)
-                            html_text = ""
-                            for enc in ['utf-8', 'gb18030']:
-                                try:
-                                    html_text = raw_bytes.decode(enc)
-                                    break
-                                except: continue
-                            if not html_text: html_text = raw_bytes.decode('gb18030', errors='replace')
-                            soup = BeautifulSoup(html_text, 'html.parser')
-                            for el in soup.find_all(['p', 'h1', 'h2', 'div']):
-                                t = el.get_text().strip()
-                                if t: text_content.append(t)
-                return "\n\n".join(text_content)
+                    namelist = z.namelist()
+                    opf_path = "content.opf"
+                    if "META-INF/container.xml" in namelist:
+                        try:
+                            c_soup = BeautifulSoup(z.read("META-INF/container.xml"), 'xml')
+                            rootfile = c_soup.find('rootfile')
+                            if rootfile and rootfile.get('full-path'):
+                                opf_path = rootfile.get('full-path')
+                        except: pass
+
+                    opf_dir = os.path.dirname(opf_path)
+                    if opf_path not in namelist:
+                        opf_candidates = [n for n in namelist if n.endswith('.opf')]
+                        if opf_candidates:
+                            opf_path = opf_candidates[0]
+                            opf_dir = os.path.dirname(opf_path)
+
+                    opf_soup = BeautifulSoup(z.read(opf_path), 'xml')
+                    manifest = opf_soup.find('manifest')
+                    spine = opf_soup.find('spine')
+                    
+                    id_to_href = {}
+                    if manifest:
+                        for item in manifest.find_all('item'):
+                            item_id = item.get('id')
+                            href = item.get('href')
+                            media_type = item.get('media-type', '')
+                            if item_id and href:
+                                full_href = os.path.normpath(os.path.join(opf_dir, href)).replace('\\', '/')
+                                id_to_href[item_id] = full_href
+                                if 'css' in media_type or href.endswith('.css'):
+                                    try:
+                                        css_text = z.read(full_href).decode('utf-8', errors='ignore')
+                                        styles.append(css_text)
+                                    except: pass
+
+                    spine_itemrefs = spine.find_all('itemref') if spine else []
+                    itemref_ids = [sr.get('idref') for sr in spine_itemrefs if sr.get('idref')]
+                    
+                    target_files = []
+                    if itemref_ids:
+                        for i_id in itemref_ids:
+                            if i_id in id_to_href:
+                                target_files.append(id_to_href[i_id])
+                    else:
+                        target_files = [n for n in namelist if n.endswith(('.html', '.xhtml', '.htm'))]
+
+                    for idx, chap_file in enumerate(target_files):
+                        if chap_file not in namelist:
+                            matched = [n for n in namelist if n.endswith(os.path.basename(chap_file))]
+                            if matched: chap_file = matched[0]
+                            else: continue
+                        
+                        try:
+                            chap_raw = z.read(chap_file)
+                            chap_soup = BeautifulSoup(chap_raw, 'html.parser')
+
+                            for style_tag in chap_soup.find_all('style'):
+                                if style_tag.string:
+                                    styles.append(style_tag.string)
+
+                            chap_dir = os.path.dirname(chap_file)
+                            for img in chap_soup.find_all('img'):
+                                src = img.get('src') or img.get('xlink:href')
+                                if src and not src.startswith('data:'):
+                                    img_path = os.path.normpath(os.path.join(chap_dir, src)).replace('\\', '/')
+                                    if img_path in namelist:
+                                        try:
+                                            img_data = z.read(img_path)
+                                            mime = "image/jpeg"
+                                            if img_path.lower().endswith('.png'): mime = "image/png"
+                                            elif img_path.lower().endswith('.gif'): mime = "image/gif"
+                                            elif img_path.lower().endswith('.svg'): mime = "image/svg+xml"
+                                            b64_str = base64.b64encode(img_data).decode('utf-8')
+                                            img['src'] = f"data:{mime};base64,{b64_str}"
+                                        except: pass
+
+                            c_title = f"章节 {idx+1}"
+                            h_tag = chap_soup.find(['h1', 'h2', 'h3'])
+                            if h_tag: c_title = h_tag.get_text().strip()
+
+                            body_tag = chap_soup.find('body') or chap_soup
+                            chapters.append({
+                                "chapter_index": idx,
+                                "title": c_title,
+                                "dom": body_tag
+                            })
+                        except: pass
+                print(f"✅ [EPUB] 解析完成，共成功加载 {len(chapters)} 个章节。", flush=True)
             except Exception as e:
-                RUN_METRICS.log_error("EPUB解析", f"{file_path}: {e}")
-                pass
-        elif ext in ['.mobi', '.azw3']:
-            temp_dir = None
+                print(f"⚠️ EPUB 原生 DOM 解析异常: {e}", flush=True)
+
+        elif ext == '.docx':
             try:
-                import mobi
-                temp_dir, filepath = mobi.extract(file_path)
-                text_content = []
-                if os.path.isfile(filepath):
-                    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                        soup = BeautifulSoup(f.read(), 'html.parser')
-                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
-                            t = el.get_text().strip()
-                            if t: text_content.append(t)
-                elif os.path.isdir(filepath):
-                    for root, dirs, files in os.walk(filepath):
-                        for file in sorted(files):
-                            if file.lower().endswith(('.html', '.xhtml', '.htm', '.ncx')):
-                                f_path = os.path.join(root, file)
-                                try:
-                                    with open(f_path, 'r', encoding='utf-8', errors='replace') as f:
-                                        soup = BeautifulSoup(f.read(), 'html.parser')
-                                        for el in soup.find_all(['p', 'h1', 'h2', 'div']):
-                                            t = el.get_text().strip()
-                                            if t: text_content.append(t)
-                                except: continue
-                return "\n\n".join(text_content)
+                import mammoth
+                with open(file_path, "rb") as docx_file:
+                    result = mammoth.convert_to_html(docx_file)
+                    soup = BeautifulSoup(result.value, 'html.parser')
+                    chapters.append({
+                        "chapter_index": 0,
+                        "title": os.path.basename(file_path),
+                        "dom": soup
+                    })
+                print(f"✅ [DOCX] 解析完成。", flush=True)
             except Exception as e:
-                RUN_METRICS.log_error("MOBI解析", f"{file_path}: {e}")
-                pass
-            finally:
-                if temp_dir and os.path.exists(temp_dir):
-                    try: shutil.rmtree(temp_dir)
-                    except: pass
-        elif ext == '.pdf':
-            return self._read_pdf_to_text(file_path)
-        return ""
+                print(f"⚠️ DOCX 解析异常: {e}", flush=True)
+
+        elif ext in ['.html', '.htm', '.md']:
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    if ext == '.md':
+                        import markdown
+                        content = markdown.markdown(content)
+                    soup = BeautifulSoup(content, 'html.parser')
+                    for s in soup.find_all('style'):
+                        if s.string: styles.append(s.string)
+                    body = soup.find('body') or soup
+                    chapters.append({
+                        "chapter_index": 0,
+                        "title": os.path.basename(file_path),
+                        "dom": body
+                    })
+                print(f"✅ [HTML/MD] 解析完成。", flush=True)
+            except Exception as e:
+                print(f"⚠️ HTML/MD 解析异常: {e}", flush=True)
+
+        if not chapters:
+            print(f"📖 [TXT] 正在按纯文本处理并自动识别章节...", flush=True)
+            text = ""
+            for enc in ['utf-8', 'gbk', 'utf-16']:
+                try:
+                    with open(file_path, 'r', encoding=enc, errors='ignore') as f:
+                        text = f.read()
+                        break
+                except: continue
+            
+            if text:
+                soup = BeautifulSoup("<html><body><div></div></body></html>", 'html.parser')
+                body = soup.body
+                current_div = body.div
+                
+                lines = text.split('\n')
+                for line in lines:
+                    line_str = line.strip()
+                    if not line_str: continue
+                    if re.match(r'^\s*(第[一二三四五六七八九十百千万0-9]+[章节回卷集部篇].*)', line_str):
+                        current_div = soup.new_tag('div')
+                        body.append(current_div)
+                        h2 = soup.new_tag('h2')
+                        h2.string = line_str
+                        current_div.append(h2)
+                    else:
+                        p = soup.new_tag('p')
+                        p.string = f"\u3000\u3000{line_str}"
+                        current_div.append(p)
+                
+                chapters.append({
+                    "chapter_index": 0,
+                    "title": os.path.basename(file_path),
+                    "dom": body
+                })
+            print(f"✅ [TXT] 结构化构建完成。", flush=True)
+
+        return {
+            "styles": list(set(styles)),
+            "chapters": chapters
+        }
 
     def run_daily_slice(self, date_str):
         books = sorted([
             f for f in os.listdir('.') 
-            if f.lower().endswith(('.txt', '.epub', '.mobi', '.azw3', '.pdf')) 
+            if f.lower().endswith(('.epub', '.docx', '.txt', '.html', '.md')) 
             and not f.lower().startswith('temp_')
             and "sync_history" not in f.lower() 
             and f not in {"requirements.txt", "README.md", "get_daily_article.py"}
         ])
-        
+
         if not books:
-            print("📚 本地未找到任何文学书籍文件。", flush=True)
+            print("📭 本地未发现受支持的文学书籍文件。", flush=True)
+            RUN_METRICS.record("book_slice", False, "本地未发现文学书籍文件")
             return
 
-        # 严格只寻找当前需要读的唯一一本书
+        print(f"📚 扫描到书架书籍共 {len(books)} 本", flush=True)
+        target_len = self.split_size
+
         target = next((b for b in books if self.progress_map.get(b, 0) != -1), None)
         if not target:
-            print("📚 本地所有文学书均已阅读完毕，重置进度循环阅读。", flush=True)
-            for b in books:
-                self.progress_map[b] = 0
-            self._save_progress()
-            target = books[0]
+            print("🎉 本地所有文学书均已阅读完毕！", flush=True)
+            RUN_METRICS.record("book_slice", True, "所有文学书均已阅读完毕")
+            return
 
-        print(f"📖 正在独立读取文学书: 《{target}》", flush=True)
-        full_text = self._extract_text(target).replace('\r', '')
-        total_len = len(full_text)
-        start = self.progress_map.get(target, 0)
+        print(f"📖 锁定当前阅读书籍: 《{target}》", flush=True)
+        book_model = self._parse_book_to_dom_structure(target)
+        chapters = book_model["chapters"]
+        all_styles = book_model["styles"]
 
-        if total_len == 0 or start >= total_len:
+        if not chapters:
             self.progress_map[target] = -1
             self._save_progress()
-            print(f"📚 《{target}》 已读完或内容为空，自动跳过。", flush=True)
-            return self.run_daily_slice(date_str) # 递归找下一本
+            RUN_METRICS.record("book_slice", False, f"书籍章节为空: {target}")
+            return
 
-        remaining_in_book = total_len - start
-        target_len = self.split_size # 6000字
-
-        # 【核心规则】：如果剩余字数本身就不够 6000 字，全切完，并直接把进度标为 -1！绝对不跨书拼凑
-        if remaining_in_book <= target_len:
-            end = total_len
-            self.progress_map[target] = -1
-            print(f"🎉 提示：《{target}》 剩余字数不足 {target_len} 字（剩余 {remaining_in_book} 字），今天全部切完并标记为 -1！", flush=True)
+        book_prog = self.progress_map.get(target, 0)
+        if isinstance(book_prog, dict):
+            curr_chap_idx = book_prog.get("chap_idx", 0)
+            start_node_idx = book_prog.get("node_idx", 0)
+            start_offset = book_prog.get("char_offset", 0)
         else:
-            end = start + target_len
-            found_punc = False
-            for i in range(end, min(end + 500, total_len)):
-                if full_text[i] == self.primary_punc:
-                    end = i + 1
-                    found_punc = True
-                    break
-            if not found_punc:
-                for i in range(end, min(end + 500, total_len)):
-                    if full_text[i] in self.other_puncts:
-                        end = i + 1
-                        found_punc = True
-                        break
-            if not found_punc:
-                for i in range(end, max(start, end - 300), -1):
-                    if full_text[i] == self.primary_punc or full_text[i] in self.other_puncts:
-                        end = i + 1
-                        break
+            curr_chap_idx = 0
+            start_node_idx = 0
+            start_offset = 0
 
-            self.progress_map[target] = end
-            print(f"✅ 已从《{target}》切分 {end - start} 字 | 最新断点位置: {end}", flush=True)
+        accumulated_dom_nodes = []
+        collected_char_count = 0
+        book_finished = False
+
+        while curr_chap_idx < len(chapters):
+            chapter = chapters[curr_chap_idx]
+            chap_dom = chapter["dom"]
+            
+            block_elements = chap_dom.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote'], recursive=False)
+            if not block_elements:
+                block_elements = chap_dom.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote'], recursive=True)
+            if not block_elements:
+                block_elements = [chap_dom]
+
+            n_idx = start_node_idx if curr_chap_idx == start_node_idx else 0
+            
+            while n_idx < len(block_elements):
+                node = block_elements[n_idx]
+                node_text = node.get_text()
+                node_offset = start_offset if (curr_chap_idx == curr_chap_idx and n_idx == n_idx) else 0
+                
+                text_chunk = node_text[node_offset:]
+                chunk_len = len(text_chunk)
+                
+                if chunk_len == 0:
+                    n_idx += 1
+                    start_offset = 0
+                    continue
+
+                if collected_char_count < target_len:
+                    accumulated_dom_nodes.append((all_styles, node))
+                    collected_char_count += chunk_len
+                    n_idx += 1
+                    start_offset = 0
+                elif target_len <= collected_char_count < target_len + 1000:
+                    accumulated_dom_nodes.append((all_styles, node))
+                    collected_char_count += chunk_len
+                    n_idx += 1
+                    start_offset = 0
+                    book_finished = True
+                    break
+                else:
+                    remaining_needed = (target_len + 500) - collected_char_count
+                    sub_text = text_chunk[:max(100, remaining_needed)]
+                    
+                    cut_pos = -1
+                    for punct in ['。', '.', '！', '？', '；']:
+                        pos = sub_text.rfind(punct)
+                        if pos > 20:
+                            cut_pos = pos + 1
+                            break
+                    
+                    if cut_pos == -1 or cut_pos == 0:
+                        cut_pos = min(len(text_chunk), max(1, remaining_needed))
+
+                    import copy
+                    node_copy = copy.copy(node)
+                    node_copy.string = text_chunk[:cut_pos]
+
+                    accumulated_dom_nodes.append((all_styles, node_copy))
+                    collected_char_count += cut_pos
+
+                    start_offset = node_offset + cut_pos
+                    book_finished = True
+                    break
+
+            if n_idx >= len(block_elements):
+                curr_chap_idx += 1
+                start_node_idx = 0
+                start_offset = 0
+                if curr_chap_idx >= len(chapters):
+                    self.progress_map[target] = -1
+                    print(f"🎉 书籍《{target}》已全部读完，标记为 -1。", flush=True)
+                    break
+            else:
+                self.progress_map[target] = {
+                    "chap_idx": curr_chap_idx,
+                    "node_idx": n_idx,
+                    "char_offset": start_offset
+                }
+
+            if book_finished or collected_char_count >= target_len:
+                break
+
+        if curr_chap_idx >= len(chapters):
+            self.progress_map[target] = -1
 
         self._save_progress()
 
-        slice_text = full_text[start:end]
-        total_collected = len(slice_text)
-
-        if total_collected == 0:
-            print("📚 今日没有收集到任何文学内容。", flush=True)
+        if not accumulated_dom_nodes:
+            print("📭 今日未收集到任何文学书切片内容。", flush=True)
+            RUN_METRICS.record("book_slice", False, "未收集到文学书切片内容")
             return
 
-        RUN_METRICS.stats["lit_books"] = 1
-        RUN_METRICS.stats["lit_chars"] = total_collected
+        print(f"✨ 单书切片完成: 《{target}》，本次切出字数: {collected_char_count} 字，准备封装上传...", flush=True)
 
-        pure_name = clean_filename(target.split('.')[0])
-        display_name = f"{date_str}_文学_{pure_name}_第{start+1}字"
+        combined_styles = "".join(list(set([s for styles, _ in accumulated_dom_nodes for s in styles])))
+        body_content_soup = BeautifulSoup("<div></div>", 'html.parser')
+        container_div = body_content_soup.div
 
-        chunk_html = "".join([split_long_paragraph(p) for p in slice_text.split('\n') if p.strip()])
-        raw_output = f"<h1>《{target}》</h1><div style='margin-bottom:30px;'>{chunk_html}</div><div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>包含书目: 《{target}》(进度:{start+1}-{end}) | 今日总字数: {total_collected}</div>"
-        
-        optimized_lit_soup = optimize_html_for_mobile_soup(BeautifulSoup(f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{raw_output}</body></html>", 'html.parser'))
-        
-        if upload_to_nutstore(str(optimized_lit_soup), display_name):
-            print(f"🎉 文学书单书独立切片成功: {display_name} (总字数: {total_collected})", flush=True)
+        for styles, node in accumulated_dom_nodes:
+            container_div.append(node)
+
+        display_title_summary = f"《{target}》"
+        display_name = f"{date_str}_文学_单书切分_共{collected_char_count}字"
+
+        raw_output_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>{combined_styles}</style>
+        </head>
+        <body>
+            <h1>文学联读与切片</h1>
+            <div class='meta'>包含来源: {display_title_summary}</div>
+            {str(container_div)}
+            <div style='color:#999;font-size:13px;margin-top:50px;border-top:1px solid #eee;'>实际切出总字数: {collected_char_count} 字</div>
+        </body>
+        </html>
+        """
+
+        lit_soup = BeautifulSoup(raw_output_html, 'html.parser')
+        optimized_lit_soup = optimize_html_for_mobile_soup(lit_soup)
+        html_output = str(optimized_lit_soup)
+
+        if upload_to_nutstore(html_output, display_name):
+            print(f"✅ 文学书切片拦截成功: {display_name} (总字数: {collected_char_count})", flush=True)
+            RUN_METRICS.record("book_slice", True, f"成功切片书籍《{target}》共 {collected_char_count} 字")
 
 # ==================== 【资讯抓取模块 (60秒超时管控)】 ====================
 def get_cdt_all(h_set, date_str):
