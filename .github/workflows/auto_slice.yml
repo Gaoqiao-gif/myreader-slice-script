@@ -2,21 +2,23 @@ name: Fangtian Reader Auto Sync
 
 on:
   schedule:
-    - cron: '11 1 * * *' # 每天北京时间凌晨 15:05（UTC 前一天 7点05分）自动运行
-  workflow_dispatch: # 支持你在网页端手动点按钮运行
+    - cron: '11 1 * * *' # UTC 01:11 运行（按需核对本地/UTC 时间注释）
+  workflow_dispatch: # 支持在网页端手动点击运行
+
+permissions:
+  contents: write
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 35 # ⏱️ 整机顶层兜底超时设为 35 分钟，为环境安装与推送留足缓冲
-    
-    # 💡 赋予 Actions 写入仓库的权限，防止账本同步失败
-    permissions:
-      contents: write
+    timeout-minutes: 35 # 整机顶层兜底超时设为 35 分钟，为环境安装与推送留足缓冲
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # 确保完整检出仓库中的文学书籍文件（.epub/.docx/.txt/.html/.md 等），避免过窄的 sparse-checkout 导致未切片
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -26,32 +28,63 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Pre-run diagnostics (workspace and books)
+        run: |
+          echo "=== Working Directory ==="
+          pwd
+          echo "=== Matched Book Files (sample, up to 30) ==="
+          find . -maxdepth 5 -type f \( \
+            -iname "*.epub" -o \
+            -iname "*.docx" -o \
+            -iname "*.txt" -o \
+            -iname "*.html" -o \
+            -iname "*.md" \
+          \) ! -path "./.git/*" | head -n 30
 
       - name: Run Python script
-        timeout-minutes: 25 # ⏱️ 爬虫步骤 25 分钟硬性总刹车
-        continue-on-error: true # ⏱️ 超时或报错时不中断后续收尾步骤
+        timeout-minutes: 25 # 爬虫/切片步骤 25 分钟硬性总刹车
+        continue-on-error: true # 超时或报错时不中断后续诊断与收尾步骤
         env:
-          # 🚀 核心连接：把网页上的 DAV 密钥拿出来，完美交接给 Python 代码
           DAV_ACCOUNT: ${{ secrets.DAV_ACCOUNT }}
           DAV_TOKEN: ${{ secrets.DAV_TOKEN }}
         run: |
           python -u get_daily_article.py
 
+      - name: Post-run diagnostics (sync_history and ledger)
+        if: always()
+        run: |
+          echo "=== Generated sync_history*.txt files ==="
+          ls -la sync_history*.txt 2>/dev/null || echo "No sync_history*.txt found"
+
+          echo "=== Literature ledger content ==="
+          for f in sync_history_lit_final_b.txt sync_history_b.txt; do
+            if [ -f "$f" ]; then
+              echo "--- $f ---"
+              cat "$f"
+              echo ""
+            else
+              echo "--- $f (not found) ---"
+            fi
+          done
+
       - name: 自动同步本地对账本回 GitHub 仓库
-        if: always() # 🛡️ 无论前面成功、报错还是超时被强杀，都强制执行账本同步
+        if: always() # 无论前面成功、报错还是超时被强杀，都强制执行账本同步
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # 检查是否有对账本文件发生了变动
+
           git status
-          
-          # 将更新后的本地对账本文件加入暂存区
-          git add sync_history_b.txt sync_history_lit_final_b.txt || true
-          
-          # 如果没有内容发生改变，跳过 commit
-          git diff --staged --quiet || git commit -m "chore: auto-update local book sync histories [skip ci]"
-          
-          # 推送回当前分支
-          git push
+
+          # 若账本文件名与脚本变量不同，请在此同步修改；使用 -f 防止被 .gitignore 误屏蔽
+          git add -f sync_history_b.txt sync_history_lit_final_b.txt sync_history*.txt 2>/dev/null || true
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: auto-update local book sync histories [skip ci]"
+            git push
+          fi
