@@ -2,7 +2,7 @@ name: Fangtian Reader Auto Sync
 
 on:
   schedule:
-    - cron: '47 22 * * *' # UTC 01:11 运行（按需核对本地/UTC 时间注释）
+    - cron: '27 22 * * *' # UTC 01:11 运行（按需核对本地/UTC 时间注释）
   workflow_dispatch: # 支持在网页端手动点击运行
 
 permissions:
