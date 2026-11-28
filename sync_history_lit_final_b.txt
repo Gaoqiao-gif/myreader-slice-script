@@ -1,3 +1,3 @@
 2004[1]_3_txt -- 03af7922d6a7069750e12a7c543f05b5 -- Anna’s Archive.txt : {"chap_idx": 0, "node_idx": 0, "char_offset": 12173, "finished": false}
 001追风筝的人+群山回唱+灿烂千阳(套装共3册).epub : {"chap_idx": 11, "node_idx": 64, "char_offset": 0, "finished": false}
-0001群山回唱 -- 胡赛尼.epub : {"chap_idx": 10, "node_idx": 0, "char_offset": 0, "finished": false}
+0001群山回唱 -- 胡赛尼.epub : {"chap_idx": 10, "node_idx": 1, "char_offset": 6983, "finished": false}
